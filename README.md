@@ -184,6 +184,7 @@ there and not from the hostname you connected to.
 | Hashrate, shares, pool | XMRig HTTP API, port 8080 | bearer token |
 | CPU, temps, RAM, disk | Glances, port 61208 | HTTP Basic |
 | Pause / resume | XMRig API `pause`/`resume` | token, `restricted = false` |
+| Mining thread count | XMRig API `PUT /2/config` | token, `restricted = false` |
 | Shut down | `rig-power off` over SSH | `ha` user |
 | Reboot | `rig-power reboot` over SSH | `ha` user, `allowReboot` |
 | Power on | Wake-on-LAN magic packet | BIOS set to wake on LAN |
@@ -196,6 +197,12 @@ disabled. `admin` is passwordless-sudo root; `ha` may run one wrapper,
 Pause is instant and keeps the pool connection and the RandomX dataset alive.
 Shutdown is not: a cold start pays the dataset init again, a few seconds with
 1 GB pages and longer without.
+
+The thread count moves the same way and at the same price -- the CPU backend
+restarts in about 3 ms, the pool connection and the dataset survive -- and with
+the same limit: it lasts as long as the process. `xmrig-start` rebuilds the
+config from `rig.mining.maxThreadsHint` at every start, so that option is what a
+rig comes back to after a restart or a reboot, whatever Home Assistant last set.
 
 `allowReboot` is off by default. Worth remembering when testing: a reboot comes
 back on its own, a poweroff only comes back if Wake-on-LAN works.
@@ -270,8 +277,14 @@ secrets/                     what it writes; gitignored, never leaves your machi
   the documented upstream setup, and systemd hardening limits the rest. The
   service is hand-rolled rather than nixpkgs' `services.xmrig`, for direct
   control over privileges.
-- **`restricted = false`** on the XMRig API is what enables pause/resume. It is
-  firewalled and token-protected; check both if you change networks.
+- **`restricted = false`** on the XMRig API is what enables pause/resume and the
+  thread count. It is firewalled and token-protected; check both if you change
+  networks. Be clear about what the token then buys its holder: unrestricted
+  means `PUT /2/config`, which replaces the *whole* configuration — including
+  `pools[0].user`. Anyone on the LAN holding the token can therefore point a rig
+  at their own wallet, and it keeps mining at a normal hashrate with normal
+  shares until the next restart puts the declared config back. Treat
+  `/etc/xmrig/token` as the credential it is.
 - **Hugepages are reserved unconditionally**, sized for a real rig: 2.5 GiB of
   2 MB pages plus 3 GiB of 1 GB pages before userspace starts. Below about 4 GiB
   of RAM the machine boots very slowly under memory pressure rather than failing

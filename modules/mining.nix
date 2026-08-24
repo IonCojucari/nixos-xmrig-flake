@@ -217,9 +217,31 @@ in
       type = lib.types.ints.between 1 100;
       default = 100;
       description = ''
-        Percentage of auto-detected threads to use. RandomX wants ~2 MB of L3
-        per thread, so XMRig usually picks correctly on its own. Lower this if
-        the machine does other work.
+        Percentage of auto-detected threads to use at start-up. RandomX wants
+        ~2 MB of L3 per thread, so XMRig usually picks correctly on its own.
+        Lower this if the machine does other work.
+
+        This is the value the miner *starts* from, not a ceiling. The same
+        setting can be changed on a running miner through the HTTP API
+        (`PUT /2/config`), which is what the Home Assistant integration's
+        thread control does: the CPU backend restarts in about 3 ms, keeping
+        the pool connection and the RandomX dataset, so there is no dataset
+        init to pay again. That change lives only as long as the process --
+        xmrig-start rebuilds the config from this option at every start, so a
+        restart, a crash-restart and a reboot all come back to this value.
+        Set here what the rig should mine at unattended, and drive the rest
+        from Home Assistant.
+
+        Two things about the percentage itself, both of which surprise:
+        it counts *logical* CPUs, and XMRig then caps the result at what the
+        L3 cache holds. On a 4-core/8-thread part with 8 MB of L3 that ceiling
+        is four threads, so every value from 50 upwards means the same thing.
+        On a CPU with one L3 -- every rig in this fleet -- the rule is
+        threads = round(logical x percentage / 100), never below 1, then
+        capped. It does not generalise: XMRig divides the budget between
+        top-level caches and never redistributes the remainder, so on a part
+        with several L3 domains (Threadripper, Epyc, multi-CCX Ryzen) the same
+        percentage yields fewer threads than that arithmetic promises.
       '';
     };
 
