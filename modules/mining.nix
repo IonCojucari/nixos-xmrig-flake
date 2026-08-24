@@ -89,6 +89,20 @@ let
       ttl = 30;
     };
 
+    # Also what covers the wake-up from `rig-power suspend`. S3 freezes the
+    # process with its socket still open, and the pool has long since dropped
+    # the other end, so on resume XMRig holds a connection that is dead
+    # without being closed. Nothing here has to detect that: the first write
+    # that fails -- a share submission, or the keepalive above -- fails the
+    # connection, and XMRig then redials on its own, waiting `retry-pause`
+    # seconds between attempts and giving up on the pool after `retries` of
+    # them (with a single pool configured, "giving up" means starting over).
+    #
+    # So the cost of a wake is bounded by how long XMRig takes to *notice*,
+    # not by how long it takes to reconnect: worst case is roughly one
+    # keepalive interval before it tries anything, plus one retry-pause. The
+    # hashing itself never stopped -- the dataset is still in RAM -- so this
+    # window costs shares, not a restart.
     retries = 5;
     "retry-pause" = 5;
   });

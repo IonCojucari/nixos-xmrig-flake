@@ -76,5 +76,13 @@
     # remotely is usually worth more than the narrower grant. Safe to test, too,
     # unlike poweroff: a reboot comes back on its own.
     allowReboot = true;
+
+    # Suspend-to-RAM, and the verb the solar-surplus automation should reach
+    # for. Restated here rather than left at its default (true) because it is
+    # the one that has to be tested per board model: S3 is firmware, and a
+    # board that sleeps but does not wake is a walk to the machine. Set it
+    # false for a rig that fails that test and Home Assistant stops offering
+    # the button, since it builds them from `rig-power status`.
+    allowSuspend = true;
   };
 }

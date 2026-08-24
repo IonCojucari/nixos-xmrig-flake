@@ -41,6 +41,17 @@ let
           # PME is what lets it actually pull the board out of S5. A NIC can
           # come up with power/wakeup=disabled, i.e. armed but unable to wake
           # anything -- which looks identical to working until you try it.
+          #
+          # The same file covers S3. There is no separate S3 knob: the kernel
+          # reads this one attribute (device_may_wakeup()) both when a driver
+          # suspends the card for suspend-to-RAM and when it shuts it down for
+          # soft-off, and calls pci_enable_wake() from either path. So nothing
+          # extra is needed here for S3 -- what S3 needs is for this script to
+          # run *again after every resume*, which is what rig-wol-resume below
+          # is for. The BIOS side does differ slightly: S5 needs the standby
+          # rail kept alive (ErP off), S3 needs the ACPI GPE behind the PCIe
+          # root port armed, and boards usually tie both to the same
+          # "Wake on LAN" setting.
           if [ -w "$path/device/power/wakeup" ]; then
             echo enabled > "$path/device/power/wakeup" 2>/dev/null || true
           fi
@@ -101,13 +112,43 @@ ${lib.optionalString cfg.allowReboot ''
         note "reboot"
         exec ${pkgs.systemd}/bin/systemctl reboot
         ;;
+''}${lib.optionalString cfg.allowSuspend ''
+      suspend|sleep)
+        note "suspend"
+        # Like `off`, this needs the sudo grant rather than the bare
+        # account: systemctl asks logind over D-Bus, and logind's polkit
+        # defaults for org.freedesktop.login1.suspend are the same as for
+        # power-off -- `yes` for an active local session, auth_admin_keep for
+        # anything else. An SSH session is "anything else", so the
+        # unprivileged `ha` user calling systemctl directly gets
+        # "Interactive authentication required" and nothing happens.
+        #
+        # What it does differently from `off` is when it returns. logind
+        # acknowledges the request and suspends after replying, so exit 0
+        # here means "accepted", not "asleep", and the caller's SSH
+        # connection then *freezes* mid-session rather than being closed --
+        # it is the machine that stops, not the socket. Anything waiting on
+        # this sees a read timeout rather than a clean disconnect.
+        #
+        # Hence the note() above the exec rather than after it: the journal
+        # line is written while the machine is still running, and it is the
+        # only durable record of who asked.
+        exec ${pkgs.systemd}/bin/systemctl suspend
+        ;;
 ''}      status)
         # Lets the caller check what it is allowed to do without having to
         # attempt it.
-        echo "actions: off${lib.optionalString cfg.allowReboot ", reboot"}, status"
+        #
+        # The format is load-bearing, not decorative: the Home Assistant
+        # integration builds its buttons by looking for a line starting with
+        # "actions:" and splitting the rest on commas
+        # (homeassistant-xmrig, custom_components/xmrig_remote_miner/ssh.py,
+        # _parse_actions). Order does not matter to it -- it makes a set --
+        # but the prefix, the commas and the verb spellings do.
+        echo "actions: off${lib.optionalString cfg.allowReboot ", reboot"}${lib.optionalString cfg.allowSuspend ", suspend"}, status"
         ;;
       *)
-        echo "usage: rig-power off${lib.optionalString cfg.allowReboot "|reboot"}|status" >&2
+        echo "usage: rig-power off${lib.optionalString cfg.allowReboot "|reboot"}${lib.optionalString cfg.allowSuspend "|suspend"}|status" >&2
         exit 1
         ;;
     esac
@@ -130,6 +171,12 @@ in
         "Wake on LAN" enabled, and ErP/EuP Ready *disabled*, since ErP cuts
         exactly the standby rail the NIC needs. That part is a BIOS trip and
         cannot be done from here.
+
+        The same magic packet is what brings the rig out of S3, so this is
+        also what `rig.power.allowSuspend` depends on. Enabling this option
+        additionally installs rig-wol-resume, which re-arms the card after
+        every resume -- without it a rig wakes from the first suspend and
+        then, on some drivers, from no later one.
       '';
     };
 
@@ -142,9 +189,9 @@ in
         can power the rig down over SSH. null grants nothing.
 
         The grant is for that one wrapper, not for systemctl: `rig-power off`
-        and nothing else, unless `allowReboot` widens it by exactly one verb.
-        This account is reachable with a key that lives on the Home Assistant
-        box, so its rights should stay boring.
+        and nothing else, unless `allowReboot` or `allowSuspend` widen it by
+        exactly one verb each. This account is reachable with a key that lives
+        on the Home Assistant box, so its rights should stay boring.
       '';
     };
 
@@ -159,6 +206,34 @@ in
         whereas a reboot loop is not recoverable remotely at all. Note the
         asymmetry when testing -- a reboot comes back on its own, a poweroff
         only comes back if Wake-on-LAN really works, BIOS included.
+      '';
+    };
+
+    allowSuspend = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Also allow `rig-power suspend` (S3, suspend-to-RAM).
+
+        On by default, unlike `allowReboot`, and the reasoning is not "it is
+        another power verb, be consistent" -- it is that this one is strictly
+        less destructive than the `off` that is already unconditional.
+
+        S3 keeps the RAM refreshed, so the RandomX dataset and the hugepage
+        pool are still there on the other side: the rig resumes in seconds
+        where a poweroff pays a full boot plus a dataset re-initialisation.
+        It also adds no new way to lose a rig. Coming back from S3 uses the
+        very same magic packet as coming back from S5, so on a rig where
+        Wake-on-LAN works, suspend works; on a rig where it does not, `off`
+        was already a console trip and suspend is no worse. There is no
+        equivalent of the reboot loop to get stuck in.
+
+        The reason to turn it off is firmware, not policy: a board that goes
+        into S3 and does not come out, or comes out with a dead NIC, is a
+        machine you have to walk to. Test it once per board model before
+        letting Home Assistant cycle a rig on solar surplus several times a
+        day -- `rig-power suspend`, then wake it, then check
+        `journalctl -u rig-wol-resume` says the card was re-armed.
       '';
     };
   };
@@ -184,6 +259,55 @@ in
           RemainAfterExit = true;
           ExecStart = "${rigWol}";
           ExecStop = "${rigWol}";
+        };
+      };
+
+      # Re-arm after every resume. This is the unit that makes `rig-power
+      # suspend` a round trip rather than a one-way one.
+      #
+      # rig-wol above covers boot (ExecStart) and shutdown (ExecStop, which is
+      # what RemainAfterExit buys). Neither fires for a sleep cycle: systemd
+      # does not stop units to suspend, it freezes the whole machine and thaws
+      # it. So on a rig that only ever suspends, the WoL flag is set exactly
+      # once, at boot -- and several drivers, r8169 first among them, drop it
+      # when the link goes down, which is precisely what suspending does to
+      # the link. The failure mode is the nasty one: the first suspend/wake
+      # cycle works because boot armed the card, and some later one does not,
+      # so it reads as flaky hardware rather than as missing configuration.
+      #
+      # wantedBy = post-resume.target is the NixOS idiom, not a systemd one:
+      # upstream systemd has no post-resume.target. NixOS defines it in
+      # nixos/modules/config/power-management.nix as a target that is
+      # `wantedBy = [ "sleep.target" ]` and requires a post-resume.service
+      # ordered `after = [ "suspend.target" "hibernate.target" ... ]`. Because
+      # sleep.target pulls the target in on the way *down*, and the service it
+      # requires cannot finish until suspend.target has been reached -- which
+      # only happens once the machine has actually come back -- everything
+      # hanging off this target runs on the far side of the sleep. The same
+      # `after = [ "suspend.target" ]` is repeated here rather than relied on
+      # transitively: Wants= carries no ordering, so without it this unit
+      # would be free to run on the way into the suspend instead.
+      #
+      # It also means this depends on powerManagement.enable, which is NixOS's
+      # default true and is what defines the target at all. Nothing in this
+      # flake turns it off; modules/mining.nix only sets its cpuFreqGovernor.
+      #
+      # Not gated on rig.power.allowSuspend: the rig can be put to sleep by
+      # something other than the wrapper -- an admin over SSH, logind -- and
+      # arming a card that is already armed costs one ethtool call.
+      systemd.services.rig-wol-resume = {
+        description = "Re-arm Wake-on-LAN after resume from suspend";
+        wantedBy = [ "post-resume.target" ];
+        after = [ "suspend.target" "post-resume.service" ];
+
+        serviceConfig = {
+          Type = "oneshot";
+          # Deliberately no RemainAfterExit here, the opposite of rig-wol.
+          # This unit has to be re-runnable: post-resume.target is restarted
+          # on every resume, and a start job for a unit that is still active
+          # from the last one is a no-op. Ending inactive is what makes the
+          # second wake re-arm the card as well as the first.
+          ExecStart = "${rigWol}";
         };
       };
     })
