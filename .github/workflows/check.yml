@@ -1,0 +1,75 @@
+name: Check
+
+# Evaluation only, deliberately.
+#
+# `nix flake check` would build the whole system closure — linux-firmware
+# included, ~770 MB — on a runner that has none of it cached, for every push.
+# What actually breaks in this repository is evaluation: a renamed option, a
+# module that stops declaring one, a package attribute that does not exist
+# (`glances.pythonModule`, to pick a real example from this repo's history).
+# Forcing each rig's toplevel derivation *path* catches all of that in about a
+# minute, without building a single byte of it.
+on:
+  push:
+  pull_request:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: "experimental-features = nix-command flakes"
+
+      # Two assertions deliberately fail the build on the shipped tree: an
+      # empty authorized-keys list (you would install a rig you cannot log
+      # into) and the placeholder wallet (you would mine into nobody's
+      # account). CI has to get past both to evaluate anything else, so it
+      # fills them with throwaway values that exist only on the runner. The
+      # greps are not decoration: if either placeholder is ever reworded, this
+      # step must fail loudly rather than silently evaluate nothing.
+      - name: Fill in the placeholders the assertions guard
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, sys
+          p = pathlib.Path("hosts/miner/default.nix")
+          s = p.read_text()
+          placeholder = '      # "ssh-ed25519 AAAA... you@workstation"\n'
+          if placeholder not in s:
+              sys.exit("placeholder comment not found in hosts/miner/default.nix")
+          p.write_text(s.replace(placeholder,
+              '      "ssh-ed25519 '
+              'AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+              ' ci@example.invalid"\n', 1))
+
+          r = pathlib.Path("hosts/miner/rig.nix")
+          t = r.read_text()
+          if 'YOUR_MONERO_ADDRESS' not in t:
+              sys.exit("wallet placeholder not found in hosts/miner/rig.nix")
+          r.write_text(t.replace('YOUR_MONERO_ADDRESS', '4' + 'A' * 94, 1))
+          PY
+          grep -q 'ci@example.invalid' hosts/miner/default.nix
+          grep -q 'AAAAAAAAAA' hosts/miner/rig.nix
+
+      # Every entry, not just `miner`: the per-rig ones differ only in which
+      # disk they name, but that value flows into the disko module and a typo
+      # there is not visible from the generic entry.
+      - name: Evaluate every rig
+        run: |
+          set -euo pipefail
+          for rig in $(nix eval --raw \
+              --apply 'cfgs: builtins.concatStringsSep " " (builtins.attrNames cfgs)' \
+              '.#nixosConfigurations'); do
+            echo "==> $rig"
+            nix eval --raw ".#nixosConfigurations.${rig}.config.system.build.toplevel.drvPath"
+            echo
+          done
+
+      # No `nix fmt --check` step. The flake declares nixpkgs-fmt as its
+      # formatter, but running it reindents the *inside* of the shell scripts
+      # embedded as indented strings — xmrig-start and rig-power — which is
+      # where most of this repository's readability lives. It provably changes
+      # nothing (the toplevel derivation path is identical either way), so it
+      # buys churn and costs legibility.
