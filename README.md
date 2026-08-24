@@ -271,7 +271,15 @@ secrets/                     what it writes; gitignored, never leaves your machi
   service is hand-rolled rather than nixpkgs' `services.xmrig`, for direct
   control over privileges.
 - **`restricted = false`** on the XMRig API is what enables pause/resume. It is
-  firewalled and token-protected; check both if you change networks.
+  firewalled and token-protected; check both if you change networks. Be clear
+  about what the token buys its holder, though, because unrestricted is not
+  only pause and resume: it also allows `PUT /2/config`, which replaces the
+  *whole* configuration — `pools[0].user` included. Anyone on the LAN holding
+  the token can therefore repoint a rig at another wallet; the miner reconnects
+  and carries on, and the declared configuration only comes back at the next
+  restart, since `xmrig-start` rebuilds it from the flake. This is the price of
+  the pause switch, not a misconfiguration — but it makes `/etc/xmrig/token` a
+  credential worth the same care as an SSH key.
 - **Hugepages are reserved unconditionally**, sized for a real rig: 2.5 GiB of
   2 MB pages plus 3 GiB of 1 GB pages before userspace starts. Below about 4 GiB
   of RAM the machine boots very slowly under memory pressure rather than failing
