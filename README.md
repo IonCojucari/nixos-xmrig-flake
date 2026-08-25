@@ -186,16 +186,13 @@ there and not from the hostname you connected to.
 | Pause / resume | XMRig API `pause`/`resume` | token, `restricted = false` |
 | Shut down | `rig-power off` over SSH | `ha` user |
 | Reboot | `rig-power reboot` over SSH | `ha` user, `allowReboot` |
-| Power on | Wake-on-LAN magic packet | BIOS set to wake on LAN |
+| Suspend to RAM | `rig-power suspend` over SSH | `ha` user, `allowSuspend` |
+| Power on, or wake from S3 | Wake-on-LAN magic packet | BIOS set to wake on LAN |
 
 Both HTTP ports require a credential and are firewalled to `rig.lanCidrs` —
 RFC1918 by default, so never internet-facing. sshd is key-only with root login
 disabled. `admin` is passwordless-sudo root; `ha` may run one wrapper,
 `rig-power`, and nothing else.
-
-Pause is instant and keeps the pool connection and the RandomX dataset alive.
-Shutdown is not: a cold start pays the dataset init again, a few seconds with
-1 GB pages and longer without.
 
 `allowReboot` is off by default. Worth remembering when testing: a reboot comes
 back on its own, a poweroff only comes back if Wake-on-LAN works.
@@ -206,6 +203,57 @@ nothing. The board has to cooperate too: *Power On By PCI-E* enabled and
 **ErP/EuP Ready disabled**, since ErP cuts the standby rail the NIC needs. On a
 board with several ports, the BIOS must wake on the one that is cabled.
 `journalctl -u rig-wol` shows what was armed.
+
+It is armed again after every resume, by a second unit — `rig-wol-resume`,
+hanging off NixOS's `post-resume.target`. That is not belt and braces: several
+drivers, r8169 among them, drop the WoL flag when the link goes down, which is
+exactly what suspending does to it. Without the re-arm a rig wakes from its
+first suspend and from no later one, which reads as flaky hardware rather than
+as missing configuration. `journalctl -u rig-wol-resume` after a wake is the
+check.
+
+## Three ways to stop mining, and what each costs
+
+Home Assistant driving a rig on solar surplus stops and starts it several times
+a day, so the cost of *restarting* is what matters, not the cost of stopping.
+
+| | How long to come back | What still draws power |
+|---|---|---|
+| Pause, via the XMRig API | instant | everything: the box is idle, not off |
+| Suspend, `rig-power suspend` | seconds | standby rail only (RAM refresh, NIC) |
+| Poweroff, `rig-power off` | a full boot, tens of seconds | standby rail only |
+
+**Pause** (`pause`/`resume` on the HTTP API) stops the hashing threads and
+nothing else. The process lives, the pool connection stays up, the RandomX
+dataset stays allocated — so resuming is immediate, and the pool never sees the
+worker disappear. What it saves is the difference between a CPU at full
+RandomX load and the same CPU idle. That is real, and on these boxes it is the
+largest single item, but it is not most of the machine: board, RAM, drive, PSU
+conversion losses and fans are all still on. Measure your own rig at the wall
+before sizing anything on it — the figure depends entirely on the CPU's share
+of total draw and is not worth guessing.
+
+**Suspend** (S3, suspend-to-RAM) is the one added for the solar cycle, and the
+reason it exists is that it keeps what a poweroff throws away. RAM stays
+refreshed, so the RandomX dataset — 2080 MiB of it — and the hugepage pool are
+still there on the other side. Resuming does not re-run `rig-hugepages`, does
+not re-initialise the dataset, and does not re-run the whole boot: the machine
+thaws and XMRig is already hashing. The one thing that does not survive is the
+TCP connection to the pool, which the pool has dropped by then; XMRig redials
+itself (`retries` / `retry-pause` in `modules/mining.nix`), and the delay is
+mostly how long it takes to *notice* the dead socket rather than how long the
+reconnect takes. Draw in S3 is the standby rail — near enough to off, and again
+worth one plug-meter reading rather than an assumption.
+
+**Poweroff** is the only one that reaches true S5, and it costs a cold boot
+plus a dataset re-initialisation on the way back: a few seconds with 1 GB pages
+and considerably longer without, on top of firmware POST. For a rig that goes
+down at dusk and comes back at dawn, that is nothing. For one following a cloud
+passing over the panels, it is most of the window.
+
+Suspend and poweroff come back the same way — the same magic packet, the same
+BIOS settings — so a rig that cannot be woken cannot use either. Test the wake
+path once per board model before wiring any of this to an automation.
 
 ## Home Assistant
 
@@ -250,7 +298,7 @@ hosts/miner/rig.nix          your settings (wallet, pool)
 hosts/miner/disko.nix        partition layout + rig.disk.device option
 modules/mining.nix           XMRig + hugepages + MSR
 modules/monitoring.nix       Glances telemetry, behind HTTP Basic
-modules/power.nix            Wake-on-LAN in, remote shutdown out
+modules/power.nix            Wake-on-LAN in, shutdown/suspend out
 modules/lan.nix              the one list of LAN ranges both services trust
 scripts/mk-secrets.sh        per-rig credentials, for --extra-files
 secrets/                     what it writes; gitignored, never leaves your machine

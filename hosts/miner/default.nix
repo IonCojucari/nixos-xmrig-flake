@@ -95,6 +95,30 @@
   networking.nftables.enable = true;
 
   time.timeZone = "Europe/Paris";
+
+  # Clock, and why it is left alone here.
+  #
+  # This rig validates certificates twice over -- TLS to the pool, strict DoT
+  # to the resolver above -- and both check validity *windows*, so a clock far
+  # enough out produces `certificate is not yet valid` and retrying never
+  # fixes it. Worth checking before Home Assistant starts cycling rigs on
+  # solar surplus several times a day.
+  #
+  # Checked, and nothing needed doing: NixOS turns systemd-timesyncd on by
+  # default (`services.timesyncd.enable = !config.boot.isContainer`, and
+  # nothing here enables a competing NTP daemon), so the rigs already
+  # discipline their clock. Not restated as an explicit `= true` on purpose:
+  # chrony and ntpd both turn timesyncd off with `mkDefault false`, and a
+  # non-default `true` here would silently outrank that and leave two NTP
+  # clients fighting over the clock if one is ever added.
+  #
+  # Suspending does not make this worse either, which is the point worth
+  # recording: in S3 the RTC keeps running on standby power and the kernel
+  # re-reads it through the persistent-clock path on resume, so a sleep cycle
+  # costs RTC drift -- seconds -- not a stopped clock. The case that actually
+  # bites is a flat CMOS battery on a rig that is fully powered off every
+  # night; that one shows up as a boot that cannot resolve or connect, and it
+  # is a battery, not a config change.
   i18n.defaultLocale = "en_GB.UTF-8";
   console.keyMap = "fr";
 
