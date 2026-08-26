@@ -85,4 +85,23 @@
     # the button, since it builds them from `rig-power status`.
     allowSuspend = true;
   };
+
+  rig.mqtt = {
+    # What replaces Home Assistant guessing. The rig says whether it is up,
+    # whether it is really mining, and whether it is on its way down, instead
+    # of having that inferred from a wattmeter and a start timer — and it
+    # takes its power commands on the same connection, which is what makes the
+    # SSH account, its key and its sudo rule optional rather than load-bearing.
+    enable = true;
+
+    # The Mosquitto add-on on the Home Assistant box, the same broker
+    # HASS.Agent and Frigate already use. A second broker would only be a
+    # second thing to fall over.
+    broker = "192.168.1.24";
+
+    # port, username and interval left at their defaults (1883, `miner`, 30 s),
+    # and passwordFile at /etc/mqtt/password: one shared fleet account, written
+    # per rig by scripts/mk-secrets.sh and shipped with `nixos-anywhere
+    # --extra-files`, exactly like the XMRig token and the Glances password.
+  };
 }

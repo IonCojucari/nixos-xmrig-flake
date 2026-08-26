@@ -240,6 +240,13 @@ in
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
 
+    # Installed whenever power control is on, not only when someone is granted
+    # sudo for it. The wrapper is the entry point for every power action on
+    # this machine, and modules/mqtt.nix calls it as root off an MQTT command
+    # -- with no controlUser involved at all. What `controlUser` decides is
+    # who else may run it, which is the sudo rule below and nothing more.
+    { environment.systemPackages = [ rigPower ]; }
+
     (lib.mkIf cfg.wakeOnLan {
       environment.systemPackages = [ pkgs.ethtool ];
 
@@ -313,8 +320,6 @@ in
     })
 
     (lib.mkIf (cfg.controlUser != null) {
-      environment.systemPackages = [ rigPower ];
-
       # The path has to be the one the caller types, not the one it points at:
       # sudo matches the string after PATH resolution and does not follow
       # symlinks. A rule naming "${rigPower}/bin/rig-power" is therefore silent
