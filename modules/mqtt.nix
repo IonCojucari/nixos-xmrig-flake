@@ -111,7 +111,11 @@ let
       }' \
       | ${pkgs.mosquitto}/bin/mosquitto_pub -q 1 -r \
           -t "homeassistant/device/rig-$worker/config" -s || true
-  '';
+  ''; # `|| true` belongs to this fragment and not to its caller: registering
+      # the buttons is the one thing here that may fail without the agent
+      # being worth restarting, and a second `|| true` at the call site is a
+      # line starting with `||`, which is a shell syntax error rather than a
+      # redundancy. `set -e` is on, so it cannot simply be left off.
 
   agent = pkgs.writeShellScript "rig-mqtt-agent" ''
     set -euo pipefail
@@ -175,7 +179,7 @@ let
       # incidentally what waits for a broker that is not up yet.
       until pub "$base/availability" online; do sleep 5; done
 
-      ${discovery} || true
+      ${discovery}
 
       while :; do
         pub "$base/state" "$(state)" || true
@@ -228,6 +232,17 @@ let
     [ "$(${pkgs.systemd}/bin/systemctl is-system-running || true)" = "stopping" ] || exit 0
 
     ${setup}
+
+    # Neither publish may hold the machine up, and `set -e` would let them.
+    #
+    # This runs on the way to poweroff, and the broker is exactly the thing
+    # that might not be there -- it lives on the Home Assistant box, which is
+    # on the same LAN and the same power. mosquitto_pub against a host that
+    # drops packets rather than refusing them blocks until its own timeout, so
+    # the rig would sit there not powering off because it could not say that
+    # it was powering off. `-W` caps that, and the `|| true` keeps a failed
+    # announcement from failing the unit and delaying the stop further.
+    pub() { ${pkgs.mosquitto}/bin/mosquitto_pub -q 1 -r -W 5 -t "$1" -m "$2" || true; }
 
     pub "$base/state" shutting-down
 
@@ -374,6 +389,12 @@ in
         RemainAfterExit = true;
         ExecStart = "${pkgs.coreutils}/bin/true";
         ExecStop = "${announce}";
+        # A hard ceiling on top of the client's own -W, because the two guard
+        # different things: -W bounds one publish, this bounds the whole hook,
+        # including a DNS lookup or a TCP handshake that hangs before either
+        # publish begins. Whatever happens, the rig is a quarter of a minute
+        # from powering off.
+        TimeoutStopSec = 15;
       };
     };
 
