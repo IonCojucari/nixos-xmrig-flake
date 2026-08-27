@@ -56,9 +56,10 @@ let
     cp ${runtimeDir}/mosquitto_pub ${runtimeDir}/mosquitto_sub
     export XDG_CONFIG_HOME=${runtimeDir}
 
-    # Every message this rig sends is retained. A rig that spoke only at its
-    # own start would be an unknown device to a Home Assistant that restarted
-    # since -- and for availability, would stay unknown until it died.
+    # Every message this rig sends is retained, so the broker holds the current
+    # answer for a Home Assistant that restarted since the rig last spoke. It
+    # is also what makes a rig's final word -- `shutting-down`, or the will's
+    # `offline` -- outlive the machine that said it.
     pub() { ${pkgs.mosquitto}/bin/mosquitto_pub -q 1 -r -t "$1" -m "$2"; }
   '';
 
@@ -77,35 +78,46 @@ let
   discovery = ''
     ${pkgs.jq}/bin/jq -nc --arg w "$worker" --arg mac "$mac" \
       --arg tpl "{{ 'ON' if value == 'ready' else 'OFF' }}" \
+      --arg avty "{{ 'offline' if value in ['offline','shutting-down'] else 'online' }}" \
       --argjson reboot ${lib.boolToString power.allowReboot} \
       --argjson suspend ${lib.boolToString power.allowSuspend} '
-      {
+      # Availability is derived from the state topic, and declared per
+      # component rather than once on the device, because exactly one entity
+      # must NOT have it: the state sensor. An unavailable entity shows no
+      # value, so putting availability on that one would hide the very word --
+      # `shutting-down` or `offline` -- that says which kind of gone this is.
+      #
+      # Everything else does have it: pressing Shutdown on a machine that is
+      # already off should be greyed out, not silently published into a topic
+      # nobody is reading.
+      { avty_t: "rig/\($w)/state", avty_tpl: $avty } as $away
+      | {
         dev: { ids: ["rig-\($w)"], name: $w, mf: "XMRig", mdl: "NixOS mining rig",
                cns: (if $mac == "" then [] else [["mac", $mac]] end) },
         o: { name: "rig-mqtt-agent" },
-        avty_t: "rig/\($w)/availability",
         cmps: ({
           state: { p: "sensor", name: "State", stat_t: "rig/\($w)/state",
                    uniq_id: "rig-\($w)-state", dev_cla: "enum",
-                   options: ["starting","mining","ready","paused","shutting-down"] },
+                   options: ["starting","mining","ready","paused",
+                             "shutting-down","offline"] },
 
           # A template, where the protocol sketch had payload_on: "ready".
           # payload_on on its own says nothing about the other states, so the
           # binary sensor would hold "on" right through a pause instead of
           # falling back to "off". This also covers states added later.
-          ready: { p: "binary_sensor", name: "Ready", stat_t: "rig/\($w)/state",
-                   uniq_id: "rig-\($w)-ready", dev_cla: "running", val_tpl: $tpl },
+          ready: ({ p: "binary_sensor", name: "Ready", stat_t: "rig/\($w)/state",
+                    uniq_id: "rig-\($w)-ready", dev_cla: "running", val_tpl: $tpl } + $away),
 
-          shutdown: { p: "button", name: "Shutdown", cmd_t: "rig/\($w)/cmd",
-                      uniq_id: "rig-\($w)-shutdown", pl_prs: "shutdown" }
+          shutdown: ({ p: "button", name: "Shutdown", cmd_t: "rig/\($w)/cmd",
+                       uniq_id: "rig-\($w)-shutdown", pl_prs: "shutdown" } + $away)
         }
         + (if $reboot then
-             { restart: { p: "button", name: "Restart", cmd_t: "rig/\($w)/cmd",
-                          uniq_id: "rig-\($w)-restart", pl_prs: "restart" } }
+             { restart: ({ p: "button", name: "Restart", cmd_t: "rig/\($w)/cmd",
+                           uniq_id: "rig-\($w)-restart", pl_prs: "restart" } + $away) }
            else {} end)
         + (if $suspend then
-             { sleep: { p: "button", name: "Sleep", cmd_t: "rig/\($w)/cmd",
-                        uniq_id: "rig-\($w)-sleep", pl_prs: "sleep" } }
+             { sleep: ({ p: "button", name: "Sleep", cmd_t: "rig/\($w)/cmd",
+                         uniq_id: "rig-\($w)-sleep", pl_prs: "sleep" } + $away) }
            else {} end)
         )
       }' \
@@ -174,10 +186,10 @@ let
     # should not silently stop the state updates. systemd tears this down with
     # the rest of the cgroup once the subscriber goes.
     (
-      # Nothing may claim `online` before the will is armed, and the will is
-      # armed by the subscriber below. Retrying here is what waits for it, and
-      # incidentally what waits for a broker that is not up yet.
-      until pub "$base/availability" online; do sleep 5; done
+      # Nothing may claim to be running before the will is armed, and the will
+      # is armed by the subscriber below. Retrying here is what waits for it,
+      # and incidentally what waits for a broker that is not up yet.
+      until pub "$base/state" "$(state)"; do sleep 5; done
 
       ${discovery}
 
@@ -205,8 +217,21 @@ let
     # gone within half a minute, which is the timescale the surplus loop makes
     # decisions on. Lower is not better: below the state interval the agent
     # would be the only thing keeping its own session alive.
+    # The will lands on the state topic, and `offline` is one of that sensor's
+    # values rather than a separate availability flag. That is the whole point
+    # of the arrangement: an availability topic marks every entity on the
+    # device unavailable, including the one that would have said *why* -- so a
+    # rig switched off on purpose and a rig whose power was cut both read
+    # `unavailable` in Home Assistant and are indistinguishable there, however
+    # carefully they differ on the wire. Measured, not theorised: the two cases
+    # were run side by side and looked identical.
+    #
+    # Here the last retained value survives instead: `shutting-down` for a
+    # machine that announced itself on the way out, `offline` for one that
+    # never got to. Availability is derived from the same topic in the
+    # discovery payload, so the buttons still grey out either way.
     ${pkgs.mosquitto}/bin/mosquitto_sub -q 1 -k 20 -t "$base/cmd" \
-      --will-topic "$base/availability" --will-payload offline \
+      --will-topic "$base/state" --will-payload offline \
       --will-qos 1 --will-retain \
     | while read -r cmd; do
         echo "rig-mqtt: received $cmd"
@@ -273,14 +298,16 @@ let
         || echo "rig-mqtt: could not announce $2 on $1" >&2
     }
 
+    # One message, and it is the last word on this rig until it boots again.
+    #
+    # Nothing retracts availability afterwards, because there is nothing left
+    # to retract: `shutting-down` is itself an away state in the discovery
+    # payload, so the buttons grey out on the strength of this line alone. And
+    # the will does not fire here -- the agent is stopped with a SIGTERM that
+    # mosquitto_sub handles, so it disconnects cleanly and the broker discards
+    # it -- which is exactly what makes this word survive as the final one,
+    # rather than being overwritten by `offline` a moment later.
     pub "$base/state" shutting-down
-
-    # Availability retracted by hand, which the will cannot do here: the agent
-    # is stopped with a SIGTERM that mosquitto_sub handles, so it disconnects
-    # cleanly and the broker discards its will. Without this line the tidy
-    # shutdown would be the one case that lies -- a rig switched off properly
-    # would sit at a retained `online` until someone powered it back on.
-    pub "$base/availability" offline
   '';
 
 in
