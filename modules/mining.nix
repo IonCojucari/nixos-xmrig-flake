@@ -165,8 +165,44 @@ let
     # drop it on a running rig), so one generic image still suits every
     # machine and retuning one rig needs no rebuild of any other.
     if [ -r /etc/rig/max-freq-percent ]; then
-      want=$(tr -dc 0-9 < /etc/rig/max-freq-percent)
-      if [ -n "$want" ] && [ "$want" -ge 10 ] && [ "$want" -le 100 ]; then
+      want=$(tr -d '[:space:]' < /etc/rig/max-freq-percent | tr A-Z a-z)
+
+      # `off` is not the same as 100, and the difference is not small. At 100
+      # the ceiling is gone but the governor is still powersave and the EPP is
+      # still `power`, and the hardware honours that: measured on a 9950X,
+      # 16743 H/s at 100% against 18941 H/s with the plain performance
+      # governor. So a rig that genuinely wants maximum hashrate -- one
+      # running on a solar surplus that would otherwise be exported for
+      # nothing, where the electricity has no marginal cost -- needs the CPU
+      # handed back untouched, not merely uncapped.
+      if [ "$want" = off ]; then
+        echo "rig-cpu-tune: /etc/rig/max-freq-percent says off; leaving the CPU untuned."
+
+        # Boost first, for the same reason the tuning path re-arms it first:
+        # cpuinfo_max_freq reports the non-boost maximum while boost is off,
+        # so reading the ceiling before re-arming would restore a ceiling
+        # lower than the one this machine actually came with.
+        if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
+          echo 1 2>/dev/null > /sys/devices/system/cpu/cpufreq/boost || true
+        fi
+
+        for p in /sys/devices/system/cpu/cpufreq/policy*; do
+          [ -d "$p" ] || continue
+          echo performance 2>/dev/null > "$p/scaling_governor" || true
+          # Usually redundant and allowed to fail: on the active drivers the
+          # performance governor pins EPP to performance by itself, and then
+          # refuses writes to this file.
+          echo performance 2>/dev/null > "$p/energy_performance_preference" || true
+          m=$(cat "$p/amd_pstate_max_freq" 2>/dev/null \
+                || cat "$p/cpuinfo_max_freq" 2>/dev/null || echo 0)
+          [ "$m" -gt 0 ] && { echo "$m" 2>/dev/null > "$p/scaling_max_freq" || true; }
+        done
+
+        echo "rig-cpu-tune: governor $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor), ceiling $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq) kHz."
+        exit 0
+      fi
+
+      if [ -n "$want" ] && [ "$want" -ge 10 ] && [ "$want" -le 100 ] 2>/dev/null; then
         echo "rig-cpu-tune: /etc/rig/max-freq-percent says $want%, overriding $pct%."
         pct=$want
       else

@@ -221,11 +221,28 @@ clocks that would reach it.
 
 `rig.mining.efficiency.maxFreqPercent` is only the fleet default. The value a
 given rig actually uses goes in **`/etc/rig/max-freq-percent`** on that rig — a
-bare number between 10 and 100, shipped in the `--extra-files` tree like the
-XMRig token, or dropped on a running rig and `systemctl restart rig-cpu-tune`.
-An unreadable or nonsensical file is ignored with a log line rather than
-failing the unit: a rig mining at the fleet default is better than a rig whose
-tuning never ran.
+bare number between 10 and 100, or the word `off`, shipped in the
+`--extra-files` tree like the XMRig token, or dropped on a running rig followed
+by `systemctl restart rig-cpu-tune`. An unreadable or nonsensical file is
+ignored with a log line rather than failing the unit: a rig mining at the fleet
+default is better than a rig whose tuning never ran.
+
+`off` hands the CPU back untouched — performance governor, EPP back to
+performance, boost re-armed, ceiling at the hardware maximum — and is not the
+same as `100`. At `100` the ceiling is gone but the governor is still
+`powersave` and the EPP is still `power`, which the hardware honours: 16743 H/s
+at `100` against 18941 H/s on the plain performance governor, measured on the
+same 9950X. Use `off` for a rig running on a surplus that would otherwise be
+exported for nothing, where the electricity has no marginal cost and hashrate
+is the only thing worth maximising:
+
+```bash
+echo off | sudo tee /etc/rig/max-freq-percent && sudo systemctl restart rig-cpu-tune
+```
+
+Measured on the 9950X, that is 20568 H/s at 202.8 W (101.4 H/W) against
+14342 H/s at 98.5 W (145.6 H/W) at its tuned 30%: 43% more hashrate for twice
+the power.
 
 It has to be per rig because the optimum is not a constant. Four rigs, each
 swept over its own frequency range, best hashes per watt **at the wall**:
