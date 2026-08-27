@@ -101,12 +101,18 @@ new root before first boot:
 ```
 secrets/<rig>/etc/xmrig/token       0600  XMRig API bearer token      (generated)
 secrets/<rig>/etc/glances/password  0600  Glances HTTP Basic password (generated)
+secrets/<rig>/etc/mqtt/password     0600  MQTT broker password         (prompted)
 secrets/<rig>/etc/admin.passwd      0600  console password hash, or `!` (prompted)
 ```
 
+The MQTT one is prompted rather than generated because it is the broker's, not
+the rig's: one `miner` account serves the whole fleet, so a value invented per
+rig is a value the broker refuses.
+
 They stay out of the Nix store, which is world-readable. Both services fail
 closed: XMRig will not start without its token, Glances will not start without
-its password.
+its password. The MQTT agent is the exception, and deliberately so — without
+its password file it does not start at all, and the rig mines on in silence.
 
 `secrets/` is gitignored and is your only record — nothing on the rig will show
 you these again. Keep it, or move to [agenix](https://github.com/ryantm/agenix)
@@ -184,9 +190,10 @@ there and not from the hostname you connected to.
 | Hashrate, shares, pool | XMRig HTTP API, port 8080 | bearer token |
 | CPU, temps, RAM, disk | Glances, port 61208 | HTTP Basic |
 | Pause / resume | XMRig API `pause`/`resume` | token, `restricted = false` |
-| Shut down | `rig-power off` over SSH | `ha` user |
-| Reboot | `rig-power reboot` over SSH | `ha` user, `allowReboot` |
-| Suspend to RAM | `rig-power suspend` over SSH | `ha` user, `allowSuspend` |
+| Presence and state | MQTT, `rig/<worker>/…` on the broker | `miner` account |
+| Shut down | `shutdown` on `rig/<worker>/cmd`, or `rig-power off` over SSH | broker account, or `ha` user |
+| Reboot | `restart` on the same topic, or `rig-power reboot` | `allowReboot` |
+| Suspend to RAM | `sleep` on the same topic, or `rig-power suspend` | `allowSuspend` |
 | Power on, or wake from S3 | Wake-on-LAN magic packet | BIOS set to wake on LAN |
 
 Both HTTP ports require a credential and are firewalled to `rig.lanCidrs` —

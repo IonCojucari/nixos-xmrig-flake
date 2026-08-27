@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Build the --extra-files tree for one rig: the XMRig API token, the Glances
-# API password, and an optional console password for `admin`.
+# API password, the MQTT broker password, and an optional console password
+# for `admin`.
 #
 # Usage:  scripts/mk-secrets.sh <rig-name>
 #
@@ -63,8 +64,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$DIR/etc/xmrig" "$DIR/etc/glances"
-chmod 755 "$DIR" "$DIR/etc" "$DIR/etc/xmrig" "$DIR/etc/glances"
+mkdir -p "$DIR/etc/xmrig" "$DIR/etc/glances" "$DIR/etc/mqtt"
+chmod 755 "$DIR" "$DIR/etc" "$DIR/etc/xmrig" "$DIR/etc/glances" "$DIR/etc/mqtt"
 
 # --------------------------------------------------------------------------
 # XMRig HTTP API bearer token. One per rig: a shared token means one leak
@@ -90,6 +91,44 @@ chmod 600 "$DIR/etc/xmrig/token"
 GLANCES_PASSWORD="$(openssl rand -hex 24)"
 printf '%s' "$GLANCES_PASSWORD" > "$DIR/etc/glances/password"
 chmod 600 "$DIR/etc/glances/password"
+
+# --------------------------------------------------------------------------
+# MQTT broker password.
+#
+# Asked for rather than generated, unlike the two above, and that is the whole
+# difference: this one credential belongs to the broker, not to the rig. One
+# account (`miner`) on the Mosquitto add-on serves the whole fleet, so a value
+# invented here would be a value the broker rejects — and the symptom is a rig
+# that boots, mines, and is simply never seen by Home Assistant.
+#
+# Type the same string for every rig. It is not echoed, so it is asked twice.
+# --------------------------------------------------------------------------
+echo
+echo "--------------------------------------------------------------"
+echo " MQTT password for user 'miner' on $RIG"
+echo
+echo " Shared by every rig — this is the password already set on the"
+echo " Mosquitto add-on, not a new one. Empty means this rig will not"
+echo " announce itself to Home Assistant over MQTT."
+echo "--------------------------------------------------------------"
+
+MQTT_SET=
+while true; do
+  read -rsp "MQTT password (empty to skip): " mq1; echo
+  if [ -z "$mq1" ]; then
+    echo "  -> skipped; no /etc/mqtt/password on this rig."
+    break
+  fi
+  read -rsp "Repeat it: " mq2; echo
+  if [ "$mq1" = "$mq2" ]; then
+    printf '%s' "$mq1" > "$DIR/etc/mqtt/password"
+    chmod 600 "$DIR/etc/mqtt/password"
+    MQTT_SET=1
+    break
+  fi
+  echo "  Passwords did not match. Try again." >&2
+done
+unset mq1 mq2
 
 # --------------------------------------------------------------------------
 # Console password for `admin`.
@@ -139,6 +178,7 @@ cat <<EOF
 Wrote $DIR
   etc/xmrig/token       0600  XMRig API bearer token
   etc/glances/password  0600  Glances HTTP Basic password
+  etc/mqtt/password     0600  $([ -n "$MQTT_SET" ] && echo "MQTT password for user 'miner'" || echo 'not written (rig will not announce itself)')
   etc/admin.passwd      0600  $([ "$HASH" = '!' ] && echo 'locked (no console password)' || echo 'SHA-512 crypt hash')
 
 Install with:
@@ -156,5 +196,12 @@ entry, there is no secrets.yaml key to add):
   Access token      $TOKEN
   Glances username  glances
   Glances password  $GLANCES_PASSWORD
+
+The rig's power buttons and its presence need nothing pasted anywhere: with
+the MQTT password in place it publishes its own Home Assistant device on
+first boot, and the buttons, the state sensor and the MAC used to wake it
+come with it. Watch it arrive with:
+
+  mosquitto_sub -h <broker> -u miner -P <password> -t 'rig/#' -v
 
 EOF
