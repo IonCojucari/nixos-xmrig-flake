@@ -34,6 +34,24 @@
     oneGbPages = true;
 
     maxThreadsHint = 100; # let XMRig decide based on L3 cache
+
+    # Mine for hashes per watt rather than for peak hashrate, on every rig in
+    # the fleet. Left explicit rather than at its default because it is the
+    # setting that decides the electricity bill, and because the number below
+    # is the one worth revisiting per machine.
+    efficiency = {
+      enable = true;
+
+      # Frequency ceiling as a percentage of each CPU's own range, applied at
+      # runtime. 70 is a starting point near the usual knee of the RandomX
+      # curve, not a measured optimum: hashrate falls roughly with the clock,
+      # power falls faster, and where the two cross depends on the silicon.
+      #
+      # Measure it per rig at the wall — package power flatters the result,
+      # because VRM and DRAM losses are a real share of what the meter sees.
+      # Log hashes and watts at 100, 80, 70 and 60 and keep the best.
+      maxFreqPercent = 70;
+    };
   };
 
   # One list for both LAN-only services (XMRig API and Glances), deliberately

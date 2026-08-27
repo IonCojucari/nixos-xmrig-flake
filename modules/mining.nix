@@ -107,6 +107,94 @@ let
     "retry-pause" = 5;
   });
 
+  # Puts the CPU where RandomX earns the most hash per watt, rather than where
+  # it reaches the highest hashrate.
+  #
+  # These two are not the same point, and the difference is large. RandomX is
+  # memory-latency-bound: above roughly base clock the core spends most of
+  # every hash waiting on RAM, so the last few hundred MHz buy a couple of
+  # percent hashrate while costing a third of the package power -- boost
+  # voltage scales worse than linearly. A rig that is paid in electricity
+  # wants the knee of that curve, not its end.
+  #
+  # Everything here is decided on the running machine for the same reason the
+  # rest of this flake is: one image, several rigs, different silicon. What
+  # the governor should be is not a constant -- it depends on which cpufreq
+  # driver the kernel bound to this CPU:
+  #
+  #   intel_pstate / amd-pstate-epp (active mode)
+  #       `performance` here does not mean "governor that ramps up quickly",
+  #       it pins the P-state request to maximum and forces EPP to
+  #       performance, which is exactly the 100%-power behaviour we are trying
+  #       to leave. `powersave` is the *tunable* governor on these drivers,
+  #       and the energy/performance preference underneath it is what actually
+  #       chooses the operating point.
+  #
+  #   intel_cpufreq / amd-pstate (passive) / acpi-cpufreq
+  #       No EPP at all, and `powersave` really does mean "sit at the minimum
+  #       frequency", which would cost far more hashrate than it saves watts.
+  #       Keep `performance` and let the frequency ceiling below do the work.
+  #
+  # The ceiling is the lever that works on every driver, and the only one that
+  # reaches an AMD board whose PPT is set in firmware: Linux cannot lower a
+  # PBO power limit, but it can decline to ask for the clocks that would reach
+  # it. See rig.mining.efficiency.maxFreqPercent for how the number is picked.
+  rigCpuTune = pkgs.writeShellScript "rig-cpu-tune" ''
+    set -uo pipefail
+
+    pct=${toString cfg.efficiency.maxFreqPercent}
+
+    if [ ! -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver ]; then
+      echo "rig-cpu-tune: no cpufreq driver bound (kernel VM?); nothing to tune."
+      exit 0
+    fi
+
+    driver=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver)
+
+    case "$driver" in
+      intel_pstate|amd-pstate-epp) gov=powersave; epp=power ;;
+      *)                           gov=performance; epp= ;;
+    esac
+
+    echo "rig-cpu-tune: driver $driver -> governor $gov, ceiling $pct% of range."
+
+    for p in /sys/devices/system/cpu/cpufreq/policy*; do
+      [ -d "$p" ] || continue
+
+      # stderr is redirected *before* the target, not after: the shell applies
+      # redirections left to right and reports a failed one on whatever stderr
+      # is at that moment, so the usual `> file 2>/dev/null` still prints
+      # "Permission denied" for a read-only sysfs node.
+      echo "$gov" 2>/dev/null > "$p/scaling_governor" || true
+
+      # Only written where the driver exposes it. On the active drivers this,
+      # not the governor, is what tells the hardware to prefer efficiency.
+      if [ -n "$epp" ] && [ -w "$p/energy_performance_preference" ]; then
+        echo "$epp" 2>/dev/null > "$p/energy_performance_preference" || true
+      fi
+
+      # Expressed against this CPU's own min..max rather than as a fixed MHz,
+      # so the same percentage lands sensibly on a 4.8 GHz desktop part and on
+      # whatever else ends up in the fleet.
+      min=$(cat "$p/cpuinfo_min_freq" 2>/dev/null || echo 0)
+      max=$(cat "$p/cpuinfo_max_freq" 2>/dev/null || echo 0)
+      [ "$max" -gt 0 ] || continue
+
+      target=$(( min + (max - min) * pct / 100 ))
+      echo "$target" 2>/dev/null > "$p/scaling_max_freq" || true
+    done
+
+    # Turbo/boost is a separate switch on acpi-cpufreq and on amd-pstate in
+    # passive mode: the ceiling above is clamped to the non-boost range there,
+    # so leaving boost armed lets the CPU exceed what we just asked for.
+    if [ "$pct" -lt 100 ] && [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
+      echo 0 2>/dev/null > /sys/devices/system/cpu/cpufreq/boost || true
+    fi
+
+    now=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null || echo "?")
+    echo "rig-cpu-tune: per-core ceiling now $now kHz."
+  '';
+
   # Right-sizes the 2 MB hugepage pool once the kernel has settled.
   #
   # 1 GB pages can only be reserved by the kernel at boot, so we always ask for
@@ -237,6 +325,48 @@ in
       '';
     };
 
+    efficiency = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Tune the CPU for hashes per watt instead of for peak hashrate.
+
+          On by default because that is what a rig paid for in electricity
+          wants, and because the alternative -- the `performance` governor
+          this module used to set unconditionally -- means "draw the whole
+          power budget the firmware allows" on the modern pstate drivers. On
+          a board whose PPT is set by a PBO profile that is a 200 W+ ceiling,
+          reached for a hashrate a fraction of that would have bought.
+
+          Set false on a rig where the electricity is free or already paid
+          for (a solar surplus that would otherwise be exported for nothing),
+          where peak hashrate really is the thing to maximise.
+        '';
+      };
+
+      maxFreqPercent = lib.mkOption {
+        type = lib.types.ints.between 30 100;
+        default = 70;
+        description = ''
+          Frequency ceiling, as a percentage of this CPU's own
+          cpuinfo_min_freq..cpuinfo_max_freq range, applied at runtime so one
+          image suits a mixed fleet.
+
+          70 is a deliberately conservative starting point near where the
+          RandomX efficiency curve tends to bend: hashrate falls roughly with
+          the clock, power falls faster than the clock because voltage comes
+          down with it. It is a starting point and not a law -- the knee moves
+          with silicon, cooling and memory timings. Measure at the wall, not
+          in package power: log hashes and watts at 100, 80, 70 and 60 and
+          keep whichever is best on this rig.
+
+          100 disables the ceiling (and leaves boost armed) while still
+          keeping the efficiency-side governor and EPP.
+        '';
+      };
+    };
+
     oneGbPages = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -265,11 +395,17 @@ in
       '';
     }];
 
-    # Machines like these tend to come up with the `powersave` governor on
-    # intel_pstate, which trades sustained clock for idle power on a box that is
-    # never idle. RandomX is latency-bound, so the clock it runs at *is* the
-    # hashrate.
-    powerManagement.cpuFreqGovernor = "performance";
+    # Left unset when the efficiency tuning is on: NixOS applies this option
+    # from a boot-time unit that writes every policy's scaling_governor, and
+    # on intel_pstate/amd-pstate-epp "performance" is precisely the setting
+    # that pins the CPU to its full power budget. rig-cpu-tune below decides
+    # the governor from the driver it finds instead.
+    #
+    # With the tuning off, the old unconditional behaviour is what remains:
+    # these machines otherwise come up on `powersave`, which trades sustained
+    # clock for idle power on a box that is never idle, and RandomX is
+    # latency-bound enough that the clock it runs at *is* the hashrate.
+    powerManagement.cpuFreqGovernor = lib.mkIf (!cfg.efficiency.enable) "performance";
 
     # -------------------------------------------------------------------------
     # Kernel: hugepages + writable MSRs. This is the part that actually moves
@@ -308,6 +444,47 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = "${rigHugepages}";
+      };
+    };
+
+    systemd.services.rig-cpu-tune = lib.mkIf cfg.efficiency.enable {
+      description = "Tune the CPU for hashes per watt";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "xmrig.service" ];
+
+      # NixOS's own cpufreq unit is what powerManagement.cpuFreqGovernor
+      # builds, and it exists whenever that option is set to anything. It is
+      # not set while this unit is enabled -- so the ordering is only here to
+      # keep the two from racing if someone turns the option back on by hand
+      # in a local override, in which case last writer wins and it should be
+      # this one.
+      after = [ "cpufreq.service" ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${rigCpuTune}";
+      };
+    };
+
+    # sysfs cpufreq settings do not reliably survive S3: a policy that comes
+    # back re-initialised from the driver defaults lands on the firmware's
+    # idea of the ceiling, which on the boards this fleet runs is the full PBO
+    # budget. Since rig-power suspend is the normal way the solar automation
+    # parks a rig, a rig would then spend most of its life un-tuned -- and the
+    # symptom is only visible at the wattmeter, since it still mines fine.
+    #
+    # Same post-resume.target idiom as rig-wol-resume in modules/power.nix,
+    # and deliberately without RemainAfterExit for the same reason: the unit
+    # has to be re-runnable on every wake, not just the first.
+    systemd.services.rig-cpu-tune-resume = lib.mkIf cfg.efficiency.enable {
+      description = "Re-apply the hash-per-watt CPU tuning after resume";
+      wantedBy = [ "post-resume.target" ];
+      after = [ "suspend.target" "post-resume.service" ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${rigCpuTune}";
       };
     };
 

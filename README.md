@@ -149,6 +149,13 @@ xmrig --bench=1M                  # actual RandomX hashrate
 `msr.allow_writes=on` reached `/proc/cmdline`; on Intel the MSR mod is worth
 only a few percent.
 
+Check what the CPU was actually tuned to:
+
+```bash
+journalctl -u rig-cpu-tune        # which driver was found, and the ceiling set
+cpupower frequency-info | head    # governor and the max the kernel will request
+```
+
 Rebuild after a change, always against `.#miner`:
 
 ```bash
@@ -182,6 +189,48 @@ Assistant, which keeps the entry and its history.
 Reinstalling a rig that already runs is the same install command — just check
 you are naming the right rig's flake entry, since the disk it erases comes from
 there and not from the hostname you connected to.
+
+## Hashes per watt
+
+The rig is tuned for efficiency, not for peak hashrate. This is `rig-cpu-tune`,
+a oneshot that runs before XMRig and again after every resume, and it is on by
+default (`rig.mining.efficiency`).
+
+It matters more than it sounds. RandomX is memory-latency-bound: past roughly
+base clock the core spends most of each hash waiting on RAM, so the last few
+hundred MHz buy a couple of percent hashrate and cost a third of the package
+power, because boost voltage scales worse than linearly. Left alone these
+machines take the whole power budget the firmware offers — on a board running a
+PBO profile, that is a 200 W+ ceiling reached for a hashrate a fraction of it
+would have bought.
+
+Two things are set, both decided on the running machine so one image suits a
+mixed fleet:
+
+| | `intel_pstate` / `amd-pstate-epp` | `intel_cpufreq` / `amd-pstate` passive / `acpi-cpufreq` |
+|---|---|---|
+| Governor | `powersave` — the *tunable* one here; `performance` pins the P-state request to maximum | `performance` — `powersave` really would sit at the minimum |
+| Preference | `energy_performance_preference = power` | not exposed |
+| Ceiling | `scaling_max_freq` at `maxFreqPercent` of this CPU's own range | same, plus `boost` off |
+
+The ceiling is the part that reaches a board whose power limit lives in
+firmware: Linux cannot lower a PBO PPT, but it can decline to ask for the
+clocks that would reach it.
+
+`maxFreqPercent` defaults to 70, which is a starting point near the usual knee
+of the curve and not a measured optimum — it moves with silicon, cooling and
+memory timings. Measure it per rig **at the wall**, since package power leaves
+out VRM and DRAM losses that the meter sees. Log hashes and watts at 100, 80,
+70 and 60, keep the best, and note that `xmrig --bench=1M` measures hashrate
+alone and so will always prefer 100.
+
+Two changes are worth more than any of this and are not tuning at all: enable
+XMP/EXPO in firmware (RandomX is latency-bound, and JEDEC fallback speed costs
+10–20% for no power saving), and confirm `huge pages 100%` in the XMRig log.
+
+Set `rig.mining.efficiency.enable = false` on a rig whose electricity is
+already paid for — a solar surplus that would otherwise be exported for
+nothing — where peak hashrate really is the thing to maximise.
 
 ## What listens, and on what
 
@@ -303,7 +352,7 @@ flake.nix                    one nixosConfigurations entry per rig
 hosts/miner/default.nix      system config: boot, users, SSH, DNS
 hosts/miner/rig.nix          your settings (wallet, pool)
 hosts/miner/disko.nix        partition layout + rig.disk.device option
-modules/mining.nix           XMRig + hugepages + MSR
+modules/mining.nix           XMRig + hugepages + MSR + hash/watt CPU tuning
 modules/monitoring.nix       Glances telemetry, behind HTTP Basic
 modules/power.nix            Wake-on-LAN in, shutdown/suspend out
 modules/lan.nix              the one list of LAN ranges both services trust
