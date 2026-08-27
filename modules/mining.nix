@@ -144,6 +144,39 @@ let
 
     pct=${toString cfg.efficiency.maxFreqPercent}
 
+    # Per-rig override, shipped the way the credentials are.
+    #
+    # The efficiency optimum is not a fleet constant, and measuring it on one
+    # rig and copying the number to the others is actively wrong. Measured
+    # across four rigs, the ceiling that maximises hashes per watt at the wall
+    # was 30% on a 9950X but 70%, 50% and 70% on an i7-6700K, an i5-10600K and
+    # an i5-6600K.
+    #
+    # The reason is structural rather than incidental, so it will keep being
+    # true of any mixed fleet: what a rig burns *besides* its CPU -- PSU
+    # losses, RAM, board -- does not fall when the CPU slows down. On the
+    # 6700K that floor is ~34 W against 7.5 W of package at the bottom of the
+    # range, so pushing the clock down stops buying watts long before it stops
+    # costing hashes, and the optimum sits high. On the 9950X the CPU is most
+    # of the draw, so it keeps paying much further down.
+    #
+    # Hence a file rather than a flake value: same mechanism as the XMRig
+    # token and the MQTT password (write it into the --extra-files tree, or
+    # drop it on a running rig), so one generic image still suits every
+    # machine and retuning one rig needs no rebuild of any other.
+    if [ -r /etc/rig/max-freq-percent ]; then
+      want=$(tr -dc 0-9 < /etc/rig/max-freq-percent)
+      if [ -n "$want" ] && [ "$want" -ge 10 ] && [ "$want" -le 100 ]; then
+        echo "rig-cpu-tune: /etc/rig/max-freq-percent says $want%, overriding $pct%."
+        pct=$want
+      else
+        # Deliberately not fatal. A rig that mines at the fleet default is a
+        # rig that mines; one that refuses to start its tuning unit because a
+        # config file has a typo in it is a rig nobody notices is untuned.
+        echo "rig-cpu-tune: /etc/rig/max-freq-percent unusable, keeping $pct%." >&2
+      fi
+    fi
+
     if [ ! -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver ]; then
       echo "rig-cpu-tune: no cpufreq driver bound (kernel VM?); nothing to tune."
       exit 0
@@ -364,23 +397,32 @@ in
       };
 
       maxFreqPercent = lib.mkOption {
-        type = lib.types.ints.between 30 100;
+        type = lib.types.ints.between 10 100;
         default = 70;
         description = ''
-          Frequency ceiling, as a percentage of this CPU's own
-          cpuinfo_min_freq..cpuinfo_max_freq range, applied at runtime so one
-          image suits a mixed fleet.
+          Fleet default for the frequency ceiling, as a percentage of this
+          CPU's own cpuinfo_min_freq..cpuinfo_max_freq range, applied at
+          runtime so one image suits a mixed fleet.
 
-          70 is a deliberately conservative starting point near where the
-          RandomX efficiency curve tends to bend: hashrate falls roughly with
-          the clock, power falls faster than the clock because voltage comes
-          down with it. It is a starting point and not a law -- the knee moves
-          with silicon, cooling and memory timings. Measure at the wall, not
-          in package power: log hashes and watts at 100, 80, 70 and 60 and
-          keep whichever is best on this rig.
+          Overridden per machine by /etc/rig/max-freq-percent when that file
+          holds a number between 10 and 100 -- which is where a measured value
+          belongs, because the optimum is not a fleet constant. Measured here:
+          30 on a 9950X, but 70, 50 and 70 on an i7-6700K, an i5-10600K and an
+          i5-6600K. A rig whose CPU is a small share of what it draws at the
+          wall has its optimum much higher up, since slowing the CPU stops
+          saving watts long before it stops costing hashes.
 
-          100 disables the ceiling (and leaves boost armed) while still
-          keeping the efficiency-side governor and EPP.
+          70 as the default because it was the best of the four measured on
+          two of them, and because it is a mild setting to inherit: a rig that
+          picks it up without anyone having measured that rig loses a few
+          percent, not half its hashrate.
+
+          Measure at the wall rather than in package power -- PSU, RAM and
+          board losses are a real share of the meter reading, and they are
+          what moves the optimum between machines. 100 disables the ceiling
+          (and leaves boost armed) while still keeping the efficiency-side
+          governor and EPP. The floor is 10 rather than 0 so that a typo
+          cannot park a rig at its minimum clock.
         '';
       };
     };

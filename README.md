@@ -217,12 +217,38 @@ The ceiling is the part that reaches a board whose power limit lives in
 firmware: Linux cannot lower a PBO PPT, but it can decline to ask for the
 clocks that would reach it.
 
-`maxFreqPercent` defaults to 70, which is a starting point near the usual knee
-of the curve and not a measured optimum — it moves with silicon, cooling and
-memory timings. Measure it per rig **at the wall**, since package power leaves
-out VRM and DRAM losses that the meter sees. Log hashes and watts at 100, 80,
-70 and 60, keep the best, and note that `xmrig --bench=1M` measures hashrate
-alone and so will always prefer 100.
+### The optimum is per rig, not per fleet
+
+`rig.mining.efficiency.maxFreqPercent` is only the fleet default. The value a
+given rig actually uses goes in **`/etc/rig/max-freq-percent`** on that rig — a
+bare number between 10 and 100, shipped in the `--extra-files` tree like the
+XMRig token, or dropped on a running rig and `systemctl restart rig-cpu-tune`.
+An unreadable or nonsensical file is ignored with a log line rather than
+failing the unit: a rig mining at the fleet default is better than a rig whose
+tuning never ran.
+
+It has to be per rig because the optimum is not a constant. Four rigs, each
+swept over its own frequency range, best hashes per watt **at the wall**:
+
+| rig | best | H/s there | W there | H/W |
+|---|---|---|---|---|
+| Ryzen 9 9950X | **30%** | 14342 | 98.5 | 145.6 |
+| Core i5-10600K | **50%** | 3039 | 59.0 | 51.5 |
+| Core i7-6700K | **70%** | 2429 | 61.3 | 39.6 |
+| Core i5-6600K | **70%** | 1588 | 35.7 | 44.5 |
+
+The spread is structural. A rig burns a fixed amount that is not its CPU — PSU
+losses, RAM, board, about 34 W on the Skylake machines — and slowing the CPU
+does not reduce it. On the 6700K the package drops to 7.5 W at the bottom of
+the range while the wall only drops to 41.6 W, so the last steps down cost
+hashes and save nothing, and its optimum sits high. On the 9950X the CPU is
+most of the draw, so the trade keeps paying far further down.
+
+Two traps when you retune. Measure the **wall**, not the package: package
+efficiency on the 9950X never stops climbing (240 H/W at 25%, still rising at
+20%) while wall efficiency peaks and turns over — and the wall is what is
+billed. And note that `xmrig --bench=1M` measures hashrate alone, so it will
+always prefer 100%.
 
 Two changes are worth more than any of this and are not tuning at all: enable
 XMP/EXPO in firmware (RandomX is latency-bound, and JEDEC fallback speed costs
