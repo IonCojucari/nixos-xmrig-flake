@@ -77,7 +77,6 @@ let
   # middle of a program where indentation is the only thing making it readable.
   discovery = ''
     ${pkgs.jq}/bin/jq -nc --arg w "$worker" --arg mac "$mac" \
-      --arg tpl "{{ 'ON' if value == 'ready' else 'OFF' }}" \
       --arg avty "{{ 'offline' if value in ['offline','shutting-down'] else 'online' }}" \
       --argjson reboot ${lib.boolToString power.allowReboot} \
       --argjson suspend ${lib.boolToString power.allowSuspend} '
@@ -98,15 +97,8 @@ let
         cmps: ({
           state: { p: "sensor", name: "State", stat_t: "rig/\($w)/state",
                    uniq_id: "rig-\($w)-state", dev_cla: "enum",
-                   options: ["starting","mining","ready","paused",
+                   options: ["starting","mining","paused",
                              "shutting-down","offline"] },
-
-          # A template, where the protocol sketch had payload_on: "ready".
-          # payload_on on its own says nothing about the other states, so the
-          # binary sensor would hold "on" right through a pause instead of
-          # falling back to "off". This also covers states added later.
-          ready: ({ p: "binary_sensor", name: "Ready", stat_t: "rig/\($w)/state",
-                    uniq_id: "rig-\($w)-ready", dev_cla: "running", val_tpl: $tpl } + $away),
 
           shutdown: ({ p: "button", name: "Shutdown", cmd_t: "rig/\($w)/cmd",
                        uniq_id: "rig-\($w)-shutdown", pl_prs: "shutdown" } + $away)
@@ -156,13 +148,12 @@ let
 
     # Reduces the XMRig summary to one word, keeping no state of its own.
     #
-    # `mining` and `ready` are separate on purpose. XMRig reports a hashrate
-    # within a second of starting, but RandomX spends another minute or two
-    # finishing its dataset and the power draw climbs with it -- so treating
-    # the first hash as "working" is how a rig's consumption gets measured on
-    # a machine that is still starting up. A non-zero 60 s average says the
-    # climb began; the 10 s average no longer running ahead of it says the
-    # climb is over.
+    # Deliberately only what the machine observes: running, paused, or not yet
+    # hashing. Whether a rig has climbed far enough to be *relied on* is not a
+    # fact about the miner, it is a judgement made by whoever is allocating
+    # power -- with their own threshold and their own tolerance -- so it is
+    # decided there, from the hashrate this already publishes, rather than
+    # being baked in here and needing four rigs redeployed to change.
     #
     # An unreachable API means the agent is up and XMRig is not, which is what
     # `starting` means -- so that fallback is not an error path.
@@ -170,9 +161,8 @@ let
       ${pkgs.curl}/bin/curl -fsS -K ${runtimeDir}/curl \
         http://127.0.0.1:${toString config.rig.mining.apiPort}/1/summary 2>/dev/null \
         | ${pkgs.jq}/bin/jq -r '
-            (.hashrate.total[0] // 0) as $h10 | (.hashrate.total[1] // 0) as $h60
+            (.hashrate.total[0] // 0) as $h10
             | if (.paused // false) then "paused"
-              elif $h60 > 0 and $h10 <= $h60 * 1.1 then "ready"
               elif $h10 > 0 then "mining"
               else "starting" end' \
         || echo starting
@@ -366,7 +356,7 @@ in
       description = ''
         Seconds between state publications. One local HTTP call and one
         retained message, so it is cheap; what it really sets is how long Home
-        Assistant can be wrong about a rig that has just reached `ready`.
+        Assistant can be wrong about a rig that has just started hashing.
       '';
     };
   };
