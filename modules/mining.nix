@@ -158,6 +158,19 @@ let
 
     echo "rig-cpu-tune: driver $driver -> governor $gov, ceiling $pct% of range."
 
+    # Re-arm boost before reading anything, so this is idempotent.
+    #
+    # cpuinfo_max_freq is not the hardware constant it looks like: with boost
+    # disabled the cpufreq core reports the *non-boost* maximum instead. Since
+    # the tail of this script disables boost, a second run would compute its
+    # ceiling from a range the first run had already shrunk -- 70% of 5.75 GHz
+    # once, then 70% of the 4.3 GHz base, and lower again on every resume,
+    # with nothing in the logs to say why the rig kept slowing down. Putting
+    # the full range back first makes every run land on the same number.
+    if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
+      echo 1 2>/dev/null > /sys/devices/system/cpu/cpufreq/boost || true
+    fi
+
     for p in /sys/devices/system/cpu/cpufreq/policy*; do
       [ -d "$p" ] || continue
 
@@ -177,7 +190,12 @@ let
       # so the same percentage lands sensibly on a 4.8 GHz desktop part and on
       # whatever else ends up in the fleet.
       min=$(cat "$p/cpuinfo_min_freq" 2>/dev/null || echo 0)
-      max=$(cat "$p/cpuinfo_max_freq" 2>/dev/null || echo 0)
+
+      # amd_pstate_max_freq first where it exists: it is the boost maximum
+      # regardless of whether boost is currently armed, so it is a stable
+      # reference even if the re-arm above did not take effect in time.
+      max=$(cat "$p/amd_pstate_max_freq" 2>/dev/null \
+              || cat "$p/cpuinfo_max_freq" 2>/dev/null || echo 0)
       [ "$max" -gt 0 ] || continue
 
       target=$(( min + (max - min) * pct / 100 ))
