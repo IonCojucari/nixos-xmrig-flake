@@ -292,7 +292,7 @@ in
 
     broker = lib.mkOption {
       type = lib.types.str;
-      example = "192.168.1.24";
+      example = "192.168.1.42";
       description = ''
         Address of the MQTT broker — the Mosquitto add-on on the Home
         Assistant box. No default on purpose: there is no address that is

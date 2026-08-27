@@ -94,10 +94,14 @@
     # SSH account, its key and its sudo rule optional rather than load-bearing.
     enable = true;
 
-    # The Mosquitto add-on on the Home Assistant box, the same broker
-    # HASS.Agent and Frigate already use. A second broker would only be a
-    # second thing to fall over.
-    broker = "192.168.1.24";
+    # Your Home Assistant box, running the Mosquitto add-on. Point this at the
+    # broker you already have rather than standing up a second one: a broker is
+    # a thing that can fall over, and two of them fall over independently.
+    #
+    # There is no default for this option, on purpose. A rig aimed at the wrong
+    # address looks perfectly healthy -- it mines, it answers its API -- while
+    # publishing where nobody is listening.
+    broker = "192.168.1.42";
 
     # port, username and interval left at their defaults (1883, `miner`, 30 s),
     # and passwordFile at /etc/mqtt/password: one shared fleet account, written
