@@ -192,7 +192,20 @@ let
     # socket dies unannounced -- power cut, network gone, kernel panic. A
     # mosquitto_pub that connects, publishes and disconnects politely takes
     # its will with it and would arm nothing.
-    ${pkgs.mosquitto}/bin/mosquitto_sub -q 1 -t "$base/cmd" \
+    # -k is how quickly a rig that fell over is known to have fallen over.
+    #
+    # The will is published by the broker when it gives up on this session,
+    # and it gives up after one and a half keepalive intervals with nothing
+    # heard. mosquitto_sub defaults to 60 s, so a rig whose power is cut sits
+    # at a retained `online` for a minute and a half -- measured here, longer
+    # still, because a socket killed with the machine sends no FIN and the
+    # broker only notices at its own next check.
+    #
+    # 20 s costs two small packets a minute and buys a rig that is known to be
+    # gone within half a minute, which is the timescale the surplus loop makes
+    # decisions on. Lower is not better: below the state interval the agent
+    # would be the only thing keeping its own session alive.
+    ${pkgs.mosquitto}/bin/mosquitto_sub -q 1 -k 20 -t "$base/cmd" \
       --will-topic "$base/availability" --will-payload offline \
       --will-qos 1 --will-retain \
     | while read -r cmd; do
@@ -240,9 +253,25 @@ let
     # on the same LAN and the same power. mosquitto_pub against a host that
     # drops packets rather than refusing them blocks until its own timeout, so
     # the rig would sit there not powering off because it could not say that
-    # it was powering off. `-W` caps that, and the `|| true` keeps a failed
-    # announcement from failing the unit and delaying the stop further.
-    pub() { ${pkgs.mosquitto}/bin/mosquitto_pub -q 1 -r -W 5 -t "$1" -m "$2" || true; }
+    # it was powering off.
+    #
+    # `timeout` and not mosquitto_pub's own flag, because it has none: `-W`
+    # belongs to mosquitto_sub, where it bounds how long to keep listening.
+    # mosquitto_pub accepts it, exits 1 with `Unknown option '-W'`, and the
+    # `|| true` below then swallows that -- which is how this managed to look
+    # like it worked while publishing nothing at all. The symptom was a rig
+    # that shut down cleanly and stayed at a retained `online` forever, i.e.
+    # exactly the lie this unit exists to prevent.
+    # It says so when it fails, rather than swallowing it into `true`. A silent
+    # `|| true` is what let the broken flag above survive a deployment: the
+    # unit stopped successfully, the machine powered off promptly, and the only
+    # evidence that nothing had been published was a retained topic nobody was
+    # looking at.
+    pub() {
+      ${pkgs.coreutils}/bin/timeout 5 \
+        ${pkgs.mosquitto}/bin/mosquitto_pub -q 1 -r -t "$1" -m "$2" \
+        || echo "rig-mqtt: could not announce $2 on $1" >&2
+    }
 
     pub "$base/state" shutting-down
 
