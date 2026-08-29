@@ -3,7 +3,16 @@
 {
   imports = [
     ./rig.nix
-  ];
+  ]
+  # Optional, and absent on almost every rig: settings true of exactly one
+  # machine. Copy hosts/miner/local.nix.example to hosts/miner/local.nix on the
+  # rig that needs one; see modules/quirks.nix for what belongs in it.
+  #
+  # `git add` it. In a git working tree Nix only copies *tracked* files into the
+  # store, so an untracked or ignored local.nix does not exist as far as this
+  # line is concerned -- pathExists returns false, the import is skipped, and
+  # the build succeeds while quietly doing nothing.
+  ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix;
 
   # ---------------------------------------------------------------------------
   # Boot / kernel
