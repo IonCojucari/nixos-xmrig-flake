@@ -394,11 +394,13 @@ SupportXMR reports balances in piconero, hence the 1e12 division.
 flake.nix                    one nixosConfigurations entry per rig
 hosts/miner/default.nix      system config: boot, users, SSH, DNS
 hosts/miner/rig.nix          your settings (wallet, pool)
+hosts/miner/local.nix        one machine's own quirks; optional, must be tracked
 hosts/miner/disko.nix        partition layout + rig.disk.device option
 modules/mining.nix           XMRig + hugepages + MSR + hash/watt CPU tuning
 modules/monitoring.nix       Glances telemetry, behind HTTP Basic
 modules/power.nix            Wake-on-LAN in, shutdown/suspend out
 modules/lan.nix              the one list of LAN ranges both services trust
+modules/quirks.nix           per-machine firmware workarounds, all off by default
 scripts/mk-secrets.sh        per-rig credentials, for --extra-files
 secrets/                     what it writes; gitignored, never leaves your machine
 ```
@@ -431,6 +433,17 @@ secrets/                     what it writes; gitignored, never leaves your machi
   2 MB pages plus 3 GiB of 1 GB pages before userspace starts. Below about 4 GiB
   of RAM the machine boots very slowly under memory pressure rather than failing
   outright.
+- **A rig that boots intermittently may be a firmware bug, not dying hardware.**
+  Some boards ship an ACPI event handler that calls a symbol their own DSDT
+  never defines; when the event re-arms in a loop the failing handler floods
+  the console and the machine can miss its login prompt entirely. It looks like
+  a BIOS that needs reflashing, which on a remote rig is the most irreversible
+  thing you could do about it — and consumer boards have no Linux flashing path
+  anyway. Check `dmesg | grep -E 'ACPI (BIOS )?Error'` and
+  `/sys/firmware/acpi/interrupts/`, and if a GPE is the culprit mask it with
+  `rig.quirks.maskGpes` from `hosts/miner/local.nix`. A boot that dies before
+  journald flushes leaves nothing behind, so the console is more trustworthy
+  than `journalctl -b -1` here.
 - **UEFI only** (GPT + ESP + systemd-boot). `hosts/miner/disko.nix` has a BIOS
   variant at the bottom; a BIOS rig needs its own flake entry.
 - **`nixpkgs` is pinned to `nixos-25.11`**, and `disko` to the last revision

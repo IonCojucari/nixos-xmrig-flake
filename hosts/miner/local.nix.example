@@ -1,0 +1,36 @@
+{ ... }:
+
+# Settings for ONE machine.
+#
+# Copy to hosts/miner/local.nix on the rig that needs it. Nothing else imports
+# it, and the other rigs simply do not have the file, so the generic image
+# stays generic.
+#
+# Then `git add hosts/miner/local.nix`. Nix copies only *tracked* files out of
+# a git working tree, so an untracked one is invisible: the import is skipped,
+# the build succeeds, and the workaround silently does not happen. Check with
+#
+#   nix eval .#nixosConfigurations.miner.config.boot.kernelParams
+#
+# before you reboot a rig expecting the fix to be there.
+#
+# Only put things here that genuinely cannot be shared or detected at runtime.
+# Firmware workarounds qualify: they have to be on the kernel command line
+# before there is a kernel to detect anything with. A frequency ceiling does
+# not -- that belongs in /etc/rig/max-freq-percent on the rig itself.
+#
+# Say which machine this is. In a fleet of identical configs, the comment is
+# the only thing that will tell you a year from now.
+
+{
+  # Machine: ASUS Z170-DELUXE rev 1.xx, AMI BIOS 1302 (2015-11-09), i7-6700K.
+  #
+  # This board's DSDT declares \_GPE._L69 but never defines the \_GPE._L69.D1F0
+  # that it calls. Left alone, GPE 0x69 re-arms in a loop on some cold boots and
+  # the failing handler floods the console -- measured at ~100 lines in 76 ms,
+  # which cost five aborted boots in 13 minutes, each dying 30-55 s in. Masking
+  # it costs nothing: that handler was never able to run anyway.
+  #
+  # See modules/quirks.nix for how to tell whether your board has this.
+  rig.quirks.maskGpes = [ "0x69" ];
+}
