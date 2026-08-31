@@ -152,7 +152,6 @@ only a few percent.
 Check what the CPU was actually tuned to:
 
 ```bash
-journalctl -u rig-cpu-tune        # which driver was found, and the ceiling set
 cpupower frequency-info | head    # governor and the max the kernel will request
 ```
 
@@ -190,90 +189,59 @@ Reinstalling a rig that already runs is the same install command — just check
 you are naming the right rig's flake entry, since the disk it erases comes from
 there and not from the hostname you connected to.
 
-## Hashes per watt
+## Every rig runs flat out
 
-The rig is tuned for efficiency, not for peak hashrate. This is `rig-cpu-tune`,
-a oneshot that runs before XMRig and again after every resume, and it is on by
-default (`rig.mining.efficiency`).
+`powerManagement.cpuFreqGovernor = "performance"`, unconditionally, on every
+rig. There is no option to ask for anything else.
 
-It matters more than it sounds. RandomX is memory-latency-bound: past roughly
-base clock the core spends most of each hash waiting on RAM, so the last few
-hundred MHz buy a couple of percent hashrate and cost a third of the package
-power, because boost voltage scales worse than linearly. Left alone these
-machines take the whole power budget the firmware offers — on a board running a
-PBO profile, that is a 200 W+ ceiling reached for a hashrate a fraction of it
-would have bought.
+On `amd-pstate-epp` and `intel_pstate` that is stronger than it sounds:
+`performance` does not merely mean "ramp up quickly", it pins the P-state
+request to maximum and forces the energy/performance preference to
+`performance` along with it.
 
-Two things are set, both decided on the running machine so one image suits a
-mixed fleet:
+### What this used to do instead
 
-| | `intel_pstate` / `amd-pstate-epp` | `intel_cpufreq` / `amd-pstate` passive / `acpi-cpufreq` |
-|---|---|---|
-| Governor | `powersave` — the *tunable* one here; `performance` pins the P-state request to maximum | `performance` — `powersave` really would sit at the minimum |
-| Preference | `energy_performance_preference = power` | not exposed |
-| Ceiling | `scaling_max_freq` at `maxFreqPercent` of this CPU's own range | same, plus `boost` off |
+Until this was removed, the module could trade hashrate for efficiency:
+`rig.mining.efficiency` capped `scaling_max_freq` at a percentage of each CPU's
+own range, applied by a `rig-cpu-tune` oneshot at boot and after every resume,
+with `/etc/rig/max-freq-percent` overriding the flake value per machine.
 
-The ceiling is the part that reaches a board whose power limit lives in
-firmware: Linux cannot lower a PBO PPT, but it can decline to ask for the
-clocks that would reach it.
-
-### The optimum is per rig, not per fleet
-
-`rig.mining.efficiency.maxFreqPercent` is only the fleet default. The value a
-given rig actually uses goes in **`/etc/rig/max-freq-percent`** on that rig — a
-bare number between 10 and 100, or the word `off`, shipped in the
-`--extra-files` tree like the XMRig token, or dropped on a running rig followed
-by `systemctl restart rig-cpu-tune`. An unreadable or nonsensical file is
-ignored with a log line rather than failing the unit: a rig mining at the fleet
-default is better than a rig whose tuning never ran.
-
-`off` hands the CPU back untouched — performance governor, EPP back to
-performance, boost re-armed, ceiling at the hardware maximum — and is not the
-same as `100`. At `100` the ceiling is gone but the governor is still
-`powersave` and the EPP is still `power`, which the hardware honours: 16743 H/s
-at `100` against 18941 H/s on the plain performance governor, measured on the
-same 9950X. Use `off` for a rig running on a surplus that would otherwise be
-exported for nothing, where the electricity has no marginal cost and hashrate
-is the only thing worth maximising:
-
-```bash
-echo off | sudo tee /etc/rig/max-freq-percent && sudo systemctl restart rig-cpu-tune
-```
-
-Measured on the 9950X, that is 20568 H/s at 202.8 W (101.4 H/W) against
-14342 H/s at 98.5 W (145.6 H/W) at its tuned 30%: 43% more hashrate for twice
-the power.
-
-It has to be per rig because the optimum is not a constant. Four rigs, each
-swept over its own frequency range, best hashes per watt **at the wall**:
+That was not a marginal setting, and the numbers are kept here because they are
+what the removal gives up. Four rigs, each swept over its own frequency range,
+best hashes per watt **at the wall**:
 
 | rig | best | H/s there | W there | H/W |
 |---|---|---|---|---|
-| Ryzen 9 9950X | **30%** | 14342 | 98.5 | 145.6 |
-| Core i5-10600K | **50%** | 3039 | 59.0 | 51.5 |
-| Core i7-6700K | **70%** | 2429 | 61.3 | 39.6 |
-| Core i5-6600K | **70%** | 1588 | 35.7 | 44.5 |
+| A — recent high-power desktop | **30%** | 14342 | 98.5 | 145.6 |
+| B — mid-range desktop | **50%** | 3039 | 59.0 | 51.5 |
+| C — older quad-core | **70%** | 2429 | 61.3 | 39.6 |
+| D — older quad-core | **70%** | 1588 | 35.7 | 44.5 |
 
-The spread is structural. A rig burns a fixed amount that is not its CPU — PSU
-losses, RAM, board, about 34 W on the Skylake machines — and slowing the CPU
-does not reduce it. On the 6700K the package drops to 7.5 W at the bottom of
-the range while the wall only drops to 41.6 W, so the last steps down cost
-hashes and save nothing, and its optimum sits high. On the 9950X the CPU is
-most of the draw, so the trade keeps paying far further down.
+On rig A, untuned is 20568 H/s at 202.8 W (101.4 H/W) against 14342 H/s at
+98.5 W (145.6 H/W) at its tuned 30%: **43% more hashrate for twice the power.**
 
-Two traps when you retune. Measure the **wall**, not the package: package
-efficiency on the 9950X never stops climbing (240 H/W at 25%, still rising at
-20%) while wall efficiency peaks and turns over — and the wall is what is
-billed. And note that `xmrig --bench=1M` measures hashrate alone, so it will
-always prefer 100%.
+The spread between rigs was structural rather than incidental. A rig burns a
+fixed amount that is not its CPU — PSU losses, RAM, board, about 34 W on the
+older machines — and slowing the CPU does not reduce it. On rig C the
+package drops to 7.5 W at the bottom of the range while the wall only drops to
+41.6 W, so the last steps down cost hashes and save nothing, and its optimum
+sat high. On rig A the CPU is most of the draw, so the trade kept paying
+much further down. That is why the value had to be per rig, and why carrying it
+meant carrying a per-machine state file as well.
 
-Two changes are worth more than any of this and are not tuning at all: enable
+### Why it went
+
+Running flat out is the right trade **only while the electricity is a surplus
+that would otherwise be exported for nothing** — where the marginal cost is
+zero and hashrate is the only thing worth maximising. On purchased electricity
+it is the wrong one, and by a margin those tables make plain.
+
+If that changes, the mechanism is in this file's git history rather than gone:
+revert the commit that removed it.
+
+Two things are worth more than any of this and are not tuning at all: enable
 XMP/EXPO in firmware (RandomX is latency-bound, and JEDEC fallback speed costs
 10–20% for no power saving), and confirm `huge pages 100%` in the XMRig log.
-
-Set `rig.mining.efficiency.enable = false` on a rig whose electricity is
-already paid for — a solar surplus that would otherwise be exported for
-nothing — where peak hashrate really is the thing to maximise.
 
 ## What listens, and on what
 
