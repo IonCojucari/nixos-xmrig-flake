@@ -8,7 +8,7 @@
 # at boot and after every resume and an /etc/rig/max-freq-percent file
 # overriding it per machine. It existed because hashes per watt peak well below
 # full clock, and by a large margin -- measured across four rigs, the optimum
-# sat at 30% of range on a 9950X and 50-70% on three Intel parts.
+# sat at 30% of range on one and 50-70% on the other three.
 #
 # All of it has been removed, on purpose: every rig now runs flat out. What
 # that costs is the ability to mine economically on purchased electricity,
@@ -301,8 +301,8 @@ in
     # energy/performance preference to `performance` with it. That is exactly
     # what is wanted here, and it is worth being clear that it is NOT what a
     # 100% ceiling used to give -- that left the governor on `powersave` and
-    # the EPP on `power`, which the hardware honoured: 16743 H/s measured on a
-    # 9950X against 18941 H/s like this.
+    # the EPP on `power`, which the hardware honoured: 16743 H/s measured that
+    # way against 18941 H/s like this, on the same machine.
     powerManagement.cpuFreqGovernor = "performance";
 
     # -------------------------------------------------------------------------

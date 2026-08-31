@@ -212,20 +212,20 @@ best hashes per watt **at the wall**:
 
 | rig | best | H/s there | W there | H/W |
 |---|---|---|---|---|
-| Ryzen 9 9950X | **30%** | 14342 | 98.5 | 145.6 |
-| Core i5-10600K | **50%** | 3039 | 59.0 | 51.5 |
-| Core i7-6700K | **70%** | 2429 | 61.3 | 39.6 |
-| Core i5-6600K | **70%** | 1588 | 35.7 | 44.5 |
+| A — recent high-power desktop | **30%** | 14342 | 98.5 | 145.6 |
+| B — mid-range desktop | **50%** | 3039 | 59.0 | 51.5 |
+| C — older quad-core | **70%** | 2429 | 61.3 | 39.6 |
+| D — older quad-core | **70%** | 1588 | 35.7 | 44.5 |
 
-On the 9950X, untuned is 20568 H/s at 202.8 W (101.4 H/W) against 14342 H/s at
+On rig A, untuned is 20568 H/s at 202.8 W (101.4 H/W) against 14342 H/s at
 98.5 W (145.6 H/W) at its tuned 30%: **43% more hashrate for twice the power.**
 
 The spread between rigs was structural rather than incidental. A rig burns a
 fixed amount that is not its CPU — PSU losses, RAM, board, about 34 W on the
-Skylake machines — and slowing the CPU does not reduce it. On the 6700K the
+older machines — and slowing the CPU does not reduce it. On rig C the
 package drops to 7.5 W at the bottom of the range while the wall only drops to
 41.6 W, so the last steps down cost hashes and save nothing, and its optimum
-sat high. On the 9950X the CPU is most of the draw, so the trade kept paying
+sat high. On rig A the CPU is most of the draw, so the trade kept paying
 much further down. That is why the value had to be per rig, and why carrying it
 meant carrying a per-machine state file as well.
 
