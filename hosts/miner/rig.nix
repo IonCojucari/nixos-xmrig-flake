@@ -39,41 +39,6 @@
     # the fleet. Left explicit rather than at its default because it is the
     # setting that decides the electricity bill, and because the number below
     # is the one worth revisiting per machine.
-    efficiency = {
-      enable = true;
-
-      # The FLEET DEFAULT only. The value that actually runs on a given rig
-      # belongs in /etc/rig/max-freq-percent on that rig, because the optimum
-      # is not a fleet constant -- see the option's own documentation, and the
-      # measurements below.
-      #
-      # Four rigs, each swept 100 -> 20% of its own frequency range, 200 s of
-      # settling per point, XMRig's 60 s average, wall power from the plug's
-      # meter. Best hashes per watt at the wall:
-      #
-      #   rig                    best    H/s at best   W at best   H/W
-      #   Ryzen 9 9950X          30%          14342        98.5    145.6
-      #   Core i5-10600K         50%           3039        59.0     51.5
-      #   Core i7-6700K          70%           2429        61.3     39.6
-      #   Core i5-6600K          70%           1588        35.7     44.5
-      #
-      # Those optima differ by more than a factor of two in position, and the
-      # cause is not silicon lottery. It is that a rig burns a fixed amount
-      # besides its CPU -- PSU losses, RAM, board, ~34 W on the Skylake
-      # machines -- which slowing the CPU does not reduce. On the 6700K the
-      # package falls to 7.5 W at the bottom of the range while the wall only
-      # falls to 41.6 W, so the last few steps down cost hashes and save
-      # nothing; its optimum therefore sits high. On the 9950X the CPU is most
-      # of the draw, so the trade keeps paying much further down.
-      #
-      # Two consequences worth keeping in mind when retuning:
-      #   - Measure the wall, not the package. Package efficiency on the 9950X
-      #     never stops climbing (240 H/W at 25%, still rising at 20%); wall
-      #     efficiency peaks and turns over. The wall is what is billed.
-      #   - Memory speed moves the optimum. Enabling EXPO on the 9950X lifted
-      #     full-clock hashrate 22% and shifted its peak from 25% to 30%.
-      maxFreqPercent = 70;
-    };
   };
 
   # One list for both LAN-only services (XMRig API and Glances), deliberately
