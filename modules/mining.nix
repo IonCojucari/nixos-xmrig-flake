@@ -176,41 +176,53 @@ let
       # nothing, where the electricity has no marginal cost -- needs the CPU
       # handed back untouched, not merely uncapped.
       if [ "$want" = off ]; then
-        echo "rig-cpu-tune: /etc/rig/max-freq-percent says off; leaving the CPU untuned."
-
-        # Boost first, for the same reason the tuning path re-arms it first:
-        # cpuinfo_max_freq reports the non-boost maximum while boost is off,
-        # so reading the ceiling before re-arming would restore a ceiling
-        # lower than the one this machine actually came with.
-        if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
-          echo 1 2>/dev/null > /sys/devices/system/cpu/cpufreq/boost || true
-        fi
-
-        for p in /sys/devices/system/cpu/cpufreq/policy*; do
-          [ -d "$p" ] || continue
-          echo performance 2>/dev/null > "$p/scaling_governor" || true
-          # Usually redundant and allowed to fail: on the active drivers the
-          # performance governor pins EPP to performance by itself, and then
-          # refuses writes to this file.
-          echo performance 2>/dev/null > "$p/energy_performance_preference" || true
-          m=$(cat "$p/amd_pstate_max_freq" 2>/dev/null \
-                || cat "$p/cpuinfo_max_freq" 2>/dev/null || echo 0)
-          [ "$m" -gt 0 ] && { echo "$m" 2>/dev/null > "$p/scaling_max_freq" || true; }
-        done
-
-        echo "rig-cpu-tune: governor $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor), ceiling $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq) kHz."
-        exit 0
-      fi
-
-      if [ -n "$want" ] && [ "$want" -ge 10 ] && [ "$want" -le 100 ] 2>/dev/null; then
-        echo "rig-cpu-tune: /etc/rig/max-freq-percent says $want%, overriding $pct%."
+        echo "rig-cpu-tune: /etc/rig/max-freq-percent says off, overriding $pct."
+        pct=off
+      elif [ -n "$want" ] && [ "$want" -ge 10 ] && [ "$want" -le 100 ] 2>/dev/null; then
+        echo "rig-cpu-tune: /etc/rig/max-freq-percent says $want%, overriding $pct."
         pct=$want
       else
         # Deliberately not fatal. A rig that mines at the fleet default is a
         # rig that mines; one that refuses to start its tuning unit because a
         # config file has a typo in it is a rig nobody notices is untuned.
-        echo "rig-cpu-tune: /etc/rig/max-freq-percent unusable, keeping $pct%." >&2
+        echo "rig-cpu-tune: /etc/rig/max-freq-percent unusable, keeping $pct." >&2
       fi
+    fi
+
+    # Hoisted out of the file-reading block above, so `off` is honoured whether
+    # it came from that file or straight from the option. It used to live
+    # inside that block, which made `off` expressible per machine but not as a
+    # fleet default -- and the option type could not have held it anyway.
+    #
+    # That asymmetry is worth removing rather than documenting: a fleet mining
+    # on solar surplus, where the electricity has no marginal cost, wants every
+    # rig untuned, and saying so once in the flake is not the same amount of
+    # work as writing a file on each machine and keeping them in step.
+    if [ "$pct" = off ]; then
+      echo "rig-cpu-tune: leaving the CPU untuned."
+
+      # Boost first, for the same reason the tuning path re-arms it first:
+      # cpuinfo_max_freq reports the non-boost maximum while boost is off,
+      # so reading the ceiling before re-arming would restore a ceiling
+      # lower than the one this machine actually came with.
+      if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
+        echo 1 2>/dev/null > /sys/devices/system/cpu/cpufreq/boost || true
+      fi
+
+      for p in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -d "$p" ] || continue
+        echo performance 2>/dev/null > "$p/scaling_governor" || true
+        # Usually redundant and allowed to fail: on the active drivers the
+        # performance governor pins EPP to performance by itself, and then
+        # refuses writes to this file.
+        echo performance 2>/dev/null > "$p/energy_performance_preference" || true
+        m=$(cat "$p/amd_pstate_max_freq" 2>/dev/null \
+              || cat "$p/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        [ "$m" -gt 0 ] && { echo "$m" 2>/dev/null > "$p/scaling_max_freq" || true; }
+      done
+
+      echo "rig-cpu-tune: governor $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor), ceiling $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq) kHz."
+      exit 0
     fi
 
     if [ ! -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver ]; then
@@ -433,15 +445,22 @@ in
       };
 
       maxFreqPercent = lib.mkOption {
-        type = lib.types.ints.between 10 100;
+        type = lib.types.either (lib.types.ints.between 10 100) (lib.types.enum [ "off" ]);
         default = 70;
         description = ''
           Fleet default for the frequency ceiling, as a percentage of this
           CPU's own cpuinfo_min_freq..cpuinfo_max_freq range, applied at
           runtime so one image suits a mixed fleet.
 
-          Overridden per machine by /etc/rig/max-freq-percent when that file
-          holds a number between 10 and 100 -- which is where a measured value
+          Also accepts the string "off", which skips tuning entirely and hands
+          the CPU back untouched: performance governor, EPP performance, boost
+          armed, no ceiling. That is not the same as 100 -- see below -- and it
+          is the setting for a fleet running on solar surplus, where the
+          electricity has no marginal cost and hashes per watt stop being the
+          thing worth maximising.
+
+          Overridden per machine by /etc/rig/max-freq-percent, which takes the
+          same two forms -- which is where a measured value
           belongs, because the optimum is not a fleet constant. Measured here:
           30 on a 9950X, but 70, 50 and 70 on an i7-6700K, an i5-10600K and an
           i5-6600K. A rig whose CPU is a small share of what it draws at the
@@ -457,8 +476,11 @@ in
           board losses are a real share of the meter reading, and they are
           what moves the optimum between machines. 100 disables the ceiling
           (and leaves boost armed) while still keeping the efficiency-side
-          governor and EPP. The floor is 10 rather than 0 so that a typo
-          cannot park a rig at its minimum clock.
+          governor and EPP -- so it is emphatically not "maximum hashrate":
+          measured on a 9950X, 16743 H/s at 100 against 18941 H/s with the
+          plain performance governor. Ask for "off" when that is what you
+          want. The floor is 10 rather than 0 so that a typo cannot park a rig
+          at its minimum clock.
         '';
       };
     };
