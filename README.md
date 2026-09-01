@@ -342,6 +342,34 @@ Miner*, once per rig — IP, port 8080, the token, the poll interval, and the Gl
 > buttons. It adds one device per rig instead of three, and discovers the MAC
 > and the permitted power verbs by itself.
 
+### Switching pools from Home Assistant
+
+The integration can repoint a rig at another pool: list the addresses to choose
+between in its config flow and each rig grows a `select`. It reads the miner's
+live configuration over the API, replaces the first pool's address and pushes
+it back with `PUT /2/config`, so the wallet, worker name and TLS flag survive
+the move and the RandomX dataset is not rebuilt — the cost is a stratum
+reconnect, not a restart.
+
+This module makes that choice stick. XMRig's config now lives in
+`/var/lib/xmrig/config.json` rather than under `/run`, and `autosave` is on, so
+the pushed configuration is written to disk instead of living only in the
+running process. At every start `xmrig-start` regenerates that file from the
+flake and carries exactly one field across: the pool.
+
+Which of the two wins is decided by `/var/lib/xmrig/pool-default`, holding the
+flake's `rig.mining.pool.url` as of the last start:
+
+| | Result |
+|---|---|
+| Flake value unchanged since last start | the remembered pool stands — a reboot does not undo a switch |
+| Flake value edited and rebuilt | the flake wins, and the remembered pool is dropped |
+
+Anything else XMRig saved — the auto-detected thread layout, most notably — is
+discarded and re-derived on the machine as it is now. To forget a remotely
+chosen pool without touching the flake, `rm /var/lib/xmrig/config.json` and
+restart the service.
+
 Pool earnings come from the pool, not the rig:
 
 ```yaml
@@ -391,10 +419,15 @@ secrets/                     what it writes; gitignored, never leaves your machi
   only pause and resume: it also allows `PUT /2/config`, which replaces the
   *whole* configuration — `pools[0].user` included. Anyone on the LAN holding
   the token can therefore repoint a rig at another wallet; the miner reconnects
-  and carries on, and the declared configuration only comes back at the next
-  restart, since `xmrig-start` rebuilds it from the flake. This is the price of
-  the pause switch, not a misconfiguration — but it makes `/etc/xmrig/token` a
-  credential worth the same care as an SSH key.
+  and carries on. Nor does a restart necessarily undo it any more: the pushed
+  config is now saved to `/var/lib/xmrig`, and `xmrig-start` deliberately
+  carries the pool across each regeneration so that a switch made from Home
+  Assistant survives a reboot. The wallet is *not* carried across — only the
+  pool url is, so a rebuild does restore `pools[0].user` — but that is a
+  narrower guarantee than "the flake wins at the next restart" used to be.
+  This is the price of the pause switch and the pool selector, not a
+  misconfiguration — but it makes `/etc/xmrig/token` a credential worth the
+  same care as an SSH key.
 - **Hugepages are reserved unconditionally**, sized for a real rig: 2.5 GiB of
   2 MB pages plus 3 GiB of 1 GB pages before userspace starts. Below about 4 GiB
   of RAM the machine boots very slowly under memory pressure rather than failing

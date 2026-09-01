@@ -45,7 +45,17 @@ let
   # name and the real 1 GB page availability are merged in at start time; see
   # xmrig-start below.
   xmrigConfig = pkgs.writeText "xmrig.json" (builtins.toJSON {
-    autosave = false;
+    # true, so that a config pushed to the HTTP API is written back to
+    # /var/lib/xmrig/config.json rather than living only in the running
+    # process. That is what makes a pool chosen from Home Assistant survive a
+    # restart -- see the pool-carrying block in xmrig-start.
+    #
+    # The usual objection to autosave is that XMRig also writes back its
+    # auto-detected thread layout, freezing a decision that should be remade on
+    # the machine as it is now. That does not apply here: xmrig-start rebuilds
+    # this file from the store on every start and carries exactly one field
+    # across, so anything else XMRig saved is discarded the next time it boots.
+    autosave = true;
     background = false;
     colors = false;
 
@@ -88,6 +98,8 @@ let
     };
 
     pools = [{
+      # Overridden at start time with the pool last chosen over the API, if one
+      # was and this value has not changed since.
       url = cfg.pool.url;
       user = cfg.pool.wallet;
       # Overridden at start time with the per-machine worker name.
@@ -165,10 +177,16 @@ let
     fi
   '';
 
-  # Merges the per-machine bits into the config at start time, in a 0700
-  # runtime dir outside the Nix store. Using `jq --rawfile` (filename on the
-  # command line, not the token itself) keeps the secret out of this process's
-  # argv and out of `ps`/`/proc/<pid>/cmdline`, unlike a CLI flag.
+  # Merges the per-machine bits into the config at start time, in a 0700 state
+  # dir outside the Nix store. Using `jq --rawfile` (filename on the command
+  # line, not the token itself) keeps the secret out of this process's argv and
+  # out of `ps`/`/proc/<pid>/cmdline`, unlike a CLI flag.
+  #
+  # /var/lib rather than /run, and that is the whole point of the directory
+  # change: XMRig writes this file back when a new config is pushed to its HTTP
+  # API, which is how Home Assistant repoints a rig at another pool. In /run
+  # that choice lasted until the next reboot. Here it lasts, and the block
+  # below is what carries it into each freshly generated config.
   xmrigStart = pkgs.writeShellScript "xmrig-start" ''
     set -euo pipefail
     umask 077
@@ -181,6 +199,45 @@ let
       echo "  sudo install -Dm600 /dev/stdin /etc/xmrig/token <<< \"\$(openssl rand -hex 24)\"" >&2
       exit 1
     fi
+
+    # Which pool to start on.
+    #
+    # Two sources disagree, and the rule between them is: the flake wins when
+    # it has changed, otherwise the machine keeps what it was last told.
+    #
+    # `/var/lib/xmrig/pool-default` records the flake's url as of the last start. If it
+    # still matches, nobody has edited the flake since the pool was last chosen
+    # remotely, so the remembered choice is the more recent instruction and it
+    # stands. If it differs, someone has just rebuilt the rig with a new pool
+    # in hand -- a deliberate act, and the newer one -- so that wins and the
+    # remembered choice is dropped.
+    #
+    # Without this, one of the two would be unreachable: either a rebuild could
+    # never move a rig that had been switched from Home Assistant, or a reboot
+    # would silently undo every switch.
+    default_pool=${lib.escapeShellArg cfg.pool.url}
+    pool="$default_pool"
+
+    baseline=""
+    if [ -r /var/lib/xmrig/pool-default ]; then
+      baseline=$(cat /var/lib/xmrig/pool-default)
+    fi
+
+    if [ "$baseline" = "$default_pool" ] && [ -s /var/lib/xmrig/config.json ]; then
+      # `// empty` rather than a default: a config.json that is present but
+      # unreadable (a truncated write, a hand-edit that lost a brace) must fall
+      # back to the flake's pool, not abort the start.
+      remembered=$(${pkgs.jq}/bin/jq -r '.pools[0].url // empty' \
+        /var/lib/xmrig/config.json 2>/dev/null || true)
+      if [ -n "$remembered" ]; then
+        pool="$remembered"
+      fi
+    fi
+
+    if [ "$pool" != "$default_pool" ]; then
+      echo "xmrig: keeping the pool last chosen over the API -> $pool"
+    fi
+    printf '%s' "$default_pool" > /var/lib/xmrig/pool-default
 
     worker=${workerExpr}
 ${lib.optionalString (cfg.pool.workerName == null) ''
@@ -203,16 +260,24 @@ ${lib.optionalString (cfg.pool.workerName == null) ''
 
     echo "xmrig: worker=$worker 1gb-pages=$onegb"
 
+    # Written via a temporary file and renamed: XMRig watches this path and
+    # reloads on change, so a reader could otherwise catch a half-written
+    # config. Nothing is watching it at this instant -- the miner is not
+    # running yet -- but the same file is rewritten by hand often enough that
+    # the atomic form is worth having be the only form.
     ${pkgs.jq}/bin/jq \
       --rawfile token /etc/xmrig/token \
       --arg worker "$worker" \
+      --arg pool "$pool" \
       --argjson onegb "$onegb" \
       '.http["access-token"] = ($token | rtrimstr("\n"))
+       | .pools[0].url = $pool
        | .pools[0].pass = $worker
        | .randomx["1gb-pages"] = $onegb' \
-      ${xmrigConfig} > /run/xmrig/config.json
+      ${xmrigConfig} > /var/lib/xmrig/config.json.new
+    mv /var/lib/xmrig/config.json.new /var/lib/xmrig/config.json
 
-    exec ${pkgs.xmrig}/bin/xmrig --config=/run/xmrig/config.json
+    exec ${pkgs.xmrig}/bin/xmrig --config=/var/lib/xmrig/config.json
   '';
 
 in
@@ -359,8 +424,10 @@ in
         # Root is required for MSR writes and hugepage allocation. This is the
         # documented XMRig setup; the hardening below limits the blast radius.
         User = "root";
-        RuntimeDirectory = "xmrig";
-        RuntimeDirectoryMode = "0700";
+        # 0700: this file carries the HTTP access token, and now outlives the
+        # boot that wrote it.
+        StateDirectory = "xmrig";
+        StateDirectoryMode = "0700";
         ExecStart = "${xmrigStart}";
         Restart = "always";
         RestartSec = 10;
