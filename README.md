@@ -390,14 +390,42 @@ SupportXMR reports balances in piconero, hence the 1e12 division.
 flake.nix                    one nixosConfigurations entry per rig
 hosts/miner/default.nix      system config: boot, users, SSH, DNS
 hosts/miner/rig.nix          your settings (wallet, pool)
+hosts/miner/trusted.nix      lets a wheel user rebuild locally, unsigned
+hosts/miner/local.nix        optional, one machine only, gitignored
 hosts/miner/disko.nix        partition layout + rig.disk.device option
 modules/mining.nix           XMRig + hugepages + MSR + hash/watt CPU tuning
 modules/monitoring.nix       Glances telemetry, behind HTTP Basic
 modules/power.nix            Wake-on-LAN in, shutdown/suspend out
+modules/quirks.nix           per-board firmware workarounds, all off by default
 modules/lan.nix              the one list of LAN ranges both services trust
 scripts/mk-secrets.sh        per-rig credentials, for --extra-files
 secrets/                     what it writes; gitignored, never leaves your machine
 ```
+
+## One tree, every rig
+
+Every rig builds from this same tree with the same settings — that is the point
+of it, and it is why nothing here is written per machine. Core count, 1 GB page
+support, hostname, NIC name and worker name are all detected at runtime, so the
+same `.#miner` is the right target for all of them.
+
+Two things are allowed to differ, and only two:
+
+- **Secrets**, which never live in the tree at all: the XMRig token, the Glances
+  password and the MQTT password are written per rig by `scripts/mk-secrets.sh`
+  and shipped with `nixos-anywhere --extra-files`.
+- **`hosts/miner/local.nix`**, which is imported only if it exists and holds
+  what is true of exactly one motherboard. In practice that means
+  `modules/quirks.nix` — an ACPI GPE that has to be masked because the board's
+  own firmware calls a method its DSDT never defines, for instance. Everything
+  in that module defaults to doing nothing, so a rig without the file is not a
+  rig with a different configuration; it is the same configuration with no
+  exception applied.
+
+If you find yourself wanting a third, it probably belongs in `rig.nix` as a
+fleet-wide setting instead. A rig that quietly differs is a rig whose behaviour
+nobody can predict from reading this repository, and that is exactly the state
+this layout exists to prevent.
 
 ## Notes
 

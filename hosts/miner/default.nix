@@ -3,7 +3,13 @@
 {
   imports = [
     ./rig.nix
-  ];
+    ./trusted.nix
+  ]
+  # Optional, per-machine, never part of the generic image: firmware quirks and
+  # anything else true of exactly one rig. Absent on most of them, which is why
+  # this is a pathExists test rather than a plain import -- the file is the
+  # exception, and a missing exception must not be an evaluation error.
+  ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix;
 
   # ---------------------------------------------------------------------------
   # Boot / kernel
