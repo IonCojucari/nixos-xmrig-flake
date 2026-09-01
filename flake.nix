@@ -53,6 +53,7 @@
           ./modules/monitoring.nix
           ./modules/power.nix
           ./modules/mqtt.nix
+          ./modules/quirks.nix
           disko.nixosModules.disko
           ./hosts/miner/disko.nix
           { rig.disk.device = device; }
