@@ -461,6 +461,66 @@ in
       };
     };
 
+    # -------------------------------------------------------------------------
+    # Restart the miner after a resume, because its MSR tweaks did not survive
+    # -------------------------------------------------------------------------
+    #
+    # XMRig writes a set of model-specific registers at start-up -- the line
+    # `msr register values for "intel" preset have been set successfully` in
+    # the journal -- and RandomX depends on them heavily. Firmware restores its
+    # own MSR state across S3, XMRig never reapplies them, and nothing else
+    # knows they exist. So a resumed miner keeps hashing at a permanently
+    # reduced rate, with the dataset intact, the hugepages intact, the clocks
+    # at maximum and nothing in the log to say anything is wrong.
+    #
+    # Measured on the i7-6700K rig, 2026-09-01: 2442 H/s after a resume against
+    # 3046 H/s once restarted. Same 4000 MHz, same 100% hugepages, 65 °C, zero
+    # throttle events. Roughly a quarter of the hashrate, invisible.
+    #
+    # That matters here far more than it would elsewhere, because suspend is
+    # not an edge case on these machines: it is the verb the solar-surplus
+    # automation reaches for several times a day, and modules/power.nix offers
+    # it precisely because it keeps the RandomX dataset warm. Without this unit
+    # the rigs would spend most of their mining time in the degraded state, and
+    # the feature that exists to make stopping cheap would quietly be making
+    # running expensive.
+    #
+    # Restarting rather than rewriting the registers here is deliberate. The
+    # values are per-microarchitecture and XMRig already chooses them; a second
+    # implementation in this file would be one more thing to keep in step with
+    # upstream, and wrong in a way that looks exactly like this bug. What the
+    # restart costs is one dataset init -- about four seconds with 1 GB pages --
+    # against the quarter of the hashrate above. It does mean the warm dataset
+    # is not what suspend preserves any more; the fast wake still is.
+    #
+    # `try-restart`, not `restart`: a miner that was deliberately stopped must
+    # stay stopped, and `restart` would start it. Pausing from Home Assistant
+    # is unaffected either way -- that goes through the API and leaves the unit
+    # running, so this reapplies the MSRs under a paused miner too, which is
+    # what should happen.
+    #
+    # `--no-block` because this unit is itself part of the resume transaction:
+    # waiting for a job it has just enqueued into that same transaction is how
+    # a deadlock is spelled.
+    #
+    # For the post-resume.target idiom, and why `after` repeats suspend.target
+    # rather than relying on it transitively, see the long note on
+    # rig-wol-resume in modules/power.nix.
+    systemd.services.rig-xmrig-resume = {
+      description = "Restart XMRig after resume so its MSR tweaks are reapplied";
+      wantedBy = [ "post-resume.target" ];
+      after = [ "suspend.target" "post-resume.service" ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        # No RemainAfterExit, for the same reason as rig-wol-resume: this has
+        # to run again on the second wake, and a start job for a unit still
+        # active from the first one would be a no-op.
+        ExecStart =
+          "${pkgs.systemd}/bin/systemctl --no-block try-restart xmrig.service";
+      };
+    };
+
     environment.systemPackages = [ pkgs.xmrig ];
 
     # Deliberately no sudo rule for `systemctl start/stop xmrig` here.

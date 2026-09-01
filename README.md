@@ -303,13 +303,26 @@ of total draw and is not worth guessing.
 **Suspend** (S3, suspend-to-RAM) is the one added for the solar cycle, and the
 reason it exists is that it keeps what a poweroff throws away. RAM stays
 refreshed, so the RandomX dataset — 2080 MiB of it — and the hugepage pool are
-still there on the other side. Resuming does not re-run `rig-hugepages`, does
-not re-initialise the dataset, and does not re-run the whole boot: the machine
-thaws and XMRig is already hashing. The one thing that does not survive is the
-TCP connection to the pool, which the pool has dropped by then; XMRig redials
-itself (`retries` / `retry-pause` in `modules/mining.nix`), and the delay is
-mostly how long it takes to *notice* the dead socket rather than how long the
-reconnect takes. Draw in S3 is the standby rail — near enough to off, and again
+still there on the other side. Resuming does not re-run `rig-hugepages` and
+does not re-run the whole boot: the machine thaws in a few seconds instead of
+POSTing.
+
+Two things do not survive, and both are handled. The TCP connection to the pool
+is gone, the pool having dropped it long since; XMRig redials itself (`retries`
+/ `retry-pause` in `modules/mining.nix`), and the delay there is mostly how long
+it takes to *notice* the dead socket rather than how long the reconnect takes.
+
+The other is XMRig's MSR tweaks, and that one is nastier because it announces
+nothing. XMRig writes a set of model-specific registers at start-up, RandomX
+leans on them, firmware restores its own MSR state across S3, and XMRig never
+reapplies them. A resumed miner therefore keeps hashing with the dataset
+intact, the hugepages intact and the clocks at maximum, roughly a quarter
+slower — measured at 2442 H/s against 3046 H/s on an i7-6700K, same frequency,
+65 °C, no throttling. `rig-xmrig-resume` restarts the miner on the far side of
+every wake so the registers are written again. That trades one dataset
+initialisation, about four seconds with 1 GB pages, for the quarter of the
+hashrate; it does mean the warm dataset is no longer what suspend buys you, but
+the fast wake still is. Draw in S3 is the standby rail — near enough to off, and again
 worth one plug-meter reading rather than an assumption.
 
 **Poweroff** is the only one that reaches true S5, and it costs a cold boot
